@@ -7,27 +7,31 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // Constants for application metadata
 const (
 	appName    = "sysreboot"
-	appVersion = "0.1.3"
+	appVersion = "0.2.0"
 )
 
 // Enumeration for index mapping of the flags (must match appFlags order)
 const (
-	confirmIndex = iota
+	cancelIndex = iota
+	confirmIndex
 	confirmTimeoutIndex
 	delayIndex
 	haltIndex
@@ -35,6 +39,7 @@ const (
 	poweroffIndex
 	rebootIndex
 	shutdownIndex
+	statusIndex
 	timeIndex
 	verboseIndex
 	versionIndex
@@ -52,6 +57,7 @@ type flagData struct {
 // appFlags holds the configuration for all command-line flags.
 // IMPORTANT: Order must match the index constants above
 var appFlags = []flagData{
+	{"cancel", "x", new(bool), false, "Cancel a pending scheduled action."},
 	{"confirm", "c", new(bool), false, "Require confirmation before performing the action."},
 	{"confirm-timeout", "ct", new(int), 10, "Confirmation timeout in seconds."},
 	{"delay", "d", new(int), 0, "Delay in minutes before performing the action."},
@@ -60,6 +66,7 @@ var appFlags = []flagData{
 	{"poweroff", "p", new(bool), false, "Power-off the machine."},
 	{"reboot", "r", new(bool), true, "Reboot the machine (default action)."},
 	{"shutdown", "s", new(bool), false, "Shutdown the machine (alias for poweroff)."},
+	{"status", "st", new(bool), false, "Show status of pending scheduled actions."},
 	{"time", "t", new(string), "", "Specific time for the action in HH:MM format (24-hour)."},
 	{"verbose", "vb", new(bool), false, "Output more information."},
 	{"version", "v", new(bool), false, "Show application version."},
@@ -70,6 +77,23 @@ var (
 	logger    *log.Logger // Logger instance for the application.
 	logWriter io.WriteCloser
 )
+
+// Constants for PID file management
+const (
+	pidFileDir    = "/var/run" // Primary location for PID files (Unix)
+	pidFileDirAlt = "/tmp"     // Fallback location for PID files
+	pidFileName   = "sysreboot.pid"
+)
+
+// ScheduleInfo holds information about a scheduled action
+type ScheduleInfo struct {
+	PID           int       `json:"pid"`
+	Action        string    `json:"action"`
+	ScheduledTime string    `json:"scheduled_time,omitempty"`
+	Delay         int       `json:"delay_minutes,omitempty"`
+	Message       string    `json:"message,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+}
 
 func init() {
 	// Initialize command-line flags based on appFlags configuration.
@@ -127,6 +151,9 @@ func customUsage() {
 	fmt.Fprintf(os.Stderr, "  %s --poweroff --confirm\n", appName)
 	fmt.Fprintf(os.Stderr, "  %s --shutdown --confirm\n", appName)
 	fmt.Fprintf(os.Stderr, "  %s --halt --verbose\n", appName)
+	fmt.Fprintf(os.Stderr, "  %s --reboot --time \"23:30\"\n", appName)
+	fmt.Fprintf(os.Stderr, "  %s --status                    # Show pending scheduled actions\n", appName)
+	fmt.Fprintf(os.Stderr, "  %s --cancel                    # Cancel pending scheduled action\n", appName)
 }
 
 func scheduleAtSpecificTime(timeStr string, action string, message string, confirmation bool) error {
@@ -147,9 +174,26 @@ func scheduleAtSpecificTime(timeStr string, action string, message string, confi
 
 	logger.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
+	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	time.Sleep(durationUntilReboot) // Wait until the specified time.
-	executeAction(action, message, confirmation)
+	// Set up signal handling for cancellation
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	// Wait for either the scheduled time or a signal
+	timer := time.NewTimer(durationUntilReboot)
+	select {
+	case <-timer.C:
+		// Time reached, proceed with action
+		executeAction(action, message, confirmation)
+	case sig := <-sigChan:
+		// Signal received, cancel action
+		timer.Stop()
+		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
+		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
+		return nil
+	}
+
 	return nil
 }
 
@@ -295,6 +339,167 @@ func logVerbose(message string) {
 	}
 }
 
+// getPIDFilePath returns the path to the PID file
+func getPIDFilePath() string {
+	// Try primary location first
+	if runtime.GOOS != "windows" {
+		if _, err := os.Stat(pidFileDir); err == nil {
+			return filepath.Join(pidFileDir, pidFileName)
+		}
+	}
+	// Fallback to /tmp or TEMP directory
+	tempDir := pidFileDirAlt
+	if runtime.GOOS == "windows" {
+		tempDir = os.Getenv("TEMP")
+		if tempDir == "" {
+			tempDir = os.TempDir()
+		}
+	}
+	return filepath.Join(tempDir, pidFileName)
+}
+
+// writePIDFile writes the current process PID and schedule info to a file
+func writePIDFile(scheduleInfo ScheduleInfo) error {
+	pidPath := getPIDFilePath()
+	scheduleInfo.PID = os.Getpid()
+	scheduleInfo.CreatedAt = time.Now()
+
+	data, err := json.Marshal(scheduleInfo)
+	if err != nil {
+		return fmt.Errorf("failed to marshal schedule info: %v", err)
+	}
+
+	if err := os.WriteFile(pidPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write PID file: %v", err)
+	}
+
+	logVerbose(fmt.Sprintf("Created PID file: %s", pidPath))
+	return nil
+}
+
+// readPIDFile reads the PID file and returns schedule information
+func readPIDFile() (*ScheduleInfo, error) {
+	pidPath := getPIDFilePath()
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no scheduled action found")
+		}
+		return nil, fmt.Errorf("failed to read PID file: %v", err)
+	}
+
+	var info ScheduleInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil, fmt.Errorf("failed to parse PID file: %v", err)
+	}
+
+	return &info, nil
+}
+
+// removePIDFile removes the PID file
+func removePIDFile() error {
+	pidPath := getPIDFilePath()
+	if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove PID file: %v", err)
+	}
+	logVerbose(fmt.Sprintf("Removed PID file: %s", pidPath))
+	return nil
+}
+
+// processExists checks if a process with the given PID exists
+func processExists(pid int) bool {
+	// On Unix systems, we can send signal 0 to check if process exists
+	if runtime.GOOS != "windows" {
+		process, err := os.FindProcess(pid)
+		if err != nil {
+			return false
+		}
+		err = process.Signal(syscall.Signal(0))
+		return err == nil
+	}
+
+	// On Windows, try to open the process
+	// This is a simplified check
+	process, err := os.FindProcess(pid)
+	return err == nil && process != nil
+}
+
+// cancelScheduledAction cancels a pending scheduled action
+func cancelScheduledAction() error {
+	info, err := readPIDFile()
+	if err != nil {
+		return err
+	}
+
+	// Check if the process still exists
+	if !processExists(info.PID) {
+		// Process doesn't exist, just remove the stale PID file
+		if err := removePIDFile(); err != nil {
+			return fmt.Errorf("removed stale PID file, but encountered error: %v", err)
+		}
+		return fmt.Errorf("no active scheduled action found (stale PID file removed)")
+	}
+
+	// Send SIGTERM to the process
+	process, err := os.FindProcess(info.PID)
+	if err != nil {
+		return fmt.Errorf("failed to find process: %v", err)
+	}
+
+	if err := process.Signal(os.Interrupt); err != nil {
+		// Try SIGKILL if SIGTERM fails
+		if err := process.Kill(); err != nil {
+			return fmt.Errorf("failed to kill process: %v", err)
+		}
+	}
+
+	// Remove the PID file
+	if err := removePIDFile(); err != nil {
+		logger.Printf("Warning: failed to remove PID file: %v", err)
+	}
+
+	fmt.Printf("Cancelled scheduled %s action (PID: %d)\n", info.Action, info.PID)
+	logger.Printf("Cancelled scheduled %s action (PID: %d)\n", info.Action, info.PID)
+
+	return nil
+}
+
+// showScheduleStatus displays the status of any pending scheduled actions
+func showScheduleStatus() error {
+	info, err := readPIDFile()
+	if err != nil {
+		fmt.Println("No scheduled actions pending.")
+		return nil
+	}
+
+	// Check if process is still running
+	if !processExists(info.PID) {
+		fmt.Println("No active scheduled actions (stale PID file found).")
+		removePIDFile()
+		return nil
+	}
+
+	fmt.Println("Scheduled Action Status:")
+	fmt.Println("========================")
+	fmt.Printf("Action:       %s\n", info.Action)
+	fmt.Printf("PID:          %d\n", info.PID)
+
+	if info.ScheduledTime != "" {
+		fmt.Printf("Scheduled At: %s\n", info.ScheduledTime)
+	}
+	if info.Delay > 0 {
+		fmt.Printf("Delay:        %d minutes\n", info.Delay)
+	}
+	if info.Message != "" {
+		fmt.Printf("Message:      %s\n", info.Message)
+	}
+
+	fmt.Printf("Created:      %s\n", info.CreatedAt.Format("2006-01-02 15:04:05"))
+
+	return nil
+}
+
 func cleanup() {
 	// Close log file handle
 	if logWriter != nil {
@@ -311,6 +516,24 @@ func main() {
 	// Display version information if the version flag is set and exit.
 	if *appFlags[versionIndex].value.(*bool) {
 		fmt.Printf("%s version %s\n", appName, appVersion)
+		os.Exit(0)
+	}
+
+	// Handle status flag
+	if *appFlags[statusIndex].value.(*bool) {
+		if err := showScheduleStatus(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// Handle cancel flag
+	if *appFlags[cancelIndex].value.(*bool) {
+		if err := cancelScheduledAction(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 
@@ -361,6 +584,20 @@ func handleScheduledTime(timeStr, action string) {
 	message := *(appFlags[messageIndex].value.(*string))
 	confirmation := *(appFlags[confirmIndex].value.(*bool))
 
+	// Write PID file for scheduled action
+	scheduleInfo := ScheduleInfo{
+		Action:        action,
+		ScheduledTime: timeStr,
+		Message:       message,
+	}
+
+	if err := writePIDFile(scheduleInfo); err != nil {
+		logger.Printf("Warning: failed to write PID file: %v\n", err)
+	}
+
+	// Ensure PID file is removed when done
+	defer removePIDFile()
+
 	// Attempt to schedule and handle errors if any.
 	if err := scheduleAtSpecificTime(timeStr, action, message, confirmation); err != nil {
 		logger.Printf("Error scheduling action: %v\n", err)
@@ -376,9 +613,40 @@ func handleDelay(delay int, action string) {
 
 	// Log and wait if a delay is set, then execute the action.
 	if delay > 0 {
+		// Write PID file for delayed action
+		scheduleInfo := ScheduleInfo{
+			Action:  action,
+			Delay:   delay,
+			Message: message,
+		}
+
+		if err := writePIDFile(scheduleInfo); err != nil {
+			logger.Printf("Warning: failed to write PID file: %v\n", err)
+		}
+
+		// Ensure PID file is removed when done
+		defer removePIDFile()
+
+		// Set up signal handling for cancellation
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
-		time.Sleep(time.Duration(delay) * time.Minute)
+		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
+
+		// Wait for either the delay to expire or a signal
+		timer := time.NewTimer(time.Duration(delay) * time.Minute)
+		select {
+		case <-timer.C:
+			// Delay completed, proceed with action
+		case sig := <-sigChan:
+			// Signal received, cancel action
+			timer.Stop()
+			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
+			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
+			return
+		}
 	}
 
 	executeAction(action, message, confirmation)
