@@ -1,0 +1,89 @@
+# .gitignore — tracks files to be ignored by Git
+# If you prefer the allow list template instead of the deny list, see community template:
+# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
+
+# Environment-specific files
+env/
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# Backup and temporary files
+backup/
+old/
+*~
+*.bak
+*.bak?
+*.bak??
+*.bak2
+*.gz
+*.new
+*.old
+*.tmp
+*.zip
+
+# Editor / IDE clutter
+*.swp
+*.swo
+
+# VS code
+.vscode/
+*.code-workspace
+
+# Version Control
+.git
+.git/
+
+# macOS system metadata (safe to ignore)
+Thumbs.db
+.DS_Store
+**/.DS_Store
+
+# Go build artifacts
+bin/
+build/
+coverage/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Test binary, built with `go test -c`
+*.test
+
+# IntelliJ
+.idea/
+*.iml
+
+# Keys / certs (just in case)
+*.pem
+*.key
+*.crt
+*.pfx
+
+# Project specific
+STRUCTURE.md
+
+# Database files
+*.db
+*.sqlite
+
+# macOS system metadata (safe to ignore)
+.DS_Store
+**/.DS_Store
+
+# Application-specific data
+cache/
+data/
+dist/
+node_modules/

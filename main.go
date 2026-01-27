@@ -6,35 +6,38 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 )
 
 // Constants for application metadata
 const (
 	appName    = "sysreboot"
-	appVersion = "0.1.2"
+	appVersion = "0.1.3"
 )
 
-// Enumeration for index mapping of the flags
+// Enumeration for index mapping of the flags (must match appFlags order)
 const (
-	haltIndex = iota
+	confirmIndex = iota
+	confirmTimeoutIndex
+	delayIndex
+	haltIndex
+	messageIndex
 	poweroffIndex
 	rebootIndex
-	delayIndex
-	messageIndex
-	confirmIndex
-	confirmTimeoutIndex
-	verboseIndex
-	timeIndex
-	versionIndex
 	shutdownIndex
+	timeIndex
+	verboseIndex
+	versionIndex
 )
 
 // flagData defines the structure for command-line flag information.
@@ -47,8 +50,8 @@ type flagData struct {
 }
 
 // appFlags holds the configuration for all command-line flags.
+// IMPORTANT: Order must match the index constants above
 var appFlags = []flagData{
-	// Flags are organized alphabetically by longName for readability.
 	{"confirm", "c", new(bool), false, "Require confirmation before performing the action."},
 	{"confirm-timeout", "ct", new(int), 10, "Confirmation timeout in seconds."},
 	{"delay", "d", new(int), 0, "Delay in minutes before performing the action."},
@@ -63,8 +66,9 @@ var appFlags = []flagData{
 }
 
 var (
-	logFile string      // Path to the log file.
-	logger  *log.Logger // Logger instance for the application.
+	logFile   string      // Path to the log file.
+	logger    *log.Logger // Logger instance for the application.
+	logWriter io.WriteCloser
 )
 
 func init() {
@@ -89,6 +93,7 @@ func init() {
 	if err != nil {
 		log.Fatalf("Error opening log file: %v", err)
 	}
+	logWriter = file
 	logger = log.New(file, appName+": ", log.Ldate|log.Ltime|log.Lshortfile)
 
 	// Override the default flag usage message with a custom one.
@@ -98,11 +103,15 @@ func init() {
 func getLogFileDirectory() string {
 	// Get the appropriate log file directory based on the operating system.
 	if runtime.GOOS == "windows" {
-		return os.Getenv("APPDATA")
+		appData := os.Getenv("APPDATA")
+		if appData == "" {
+			appData = "."
+		}
+		return appData
 	}
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("Error getting user home directory: %v", err)
+		return "."
 	}
 	return homeDir
 }
@@ -124,12 +133,14 @@ func scheduleAtSpecificTime(timeStr string, action string, message string, confi
 	// Schedule an action (reboot, shutdown, etc.) to occur at a specific time.
 	rebootTime, err := time.Parse("15:04", timeStr)
 	if err != nil {
-		return fmt.Errorf("invalid time format: %v", err)
+		return fmt.Errorf("invalid time format (use HH:MM): %v", err)
 	}
 
 	// Calculate how long to wait until the specified time.
 	now := time.Now()
-	durationUntilReboot := time.Until(now.Truncate(24 * time.Hour).Add(time.Hour*time.Duration(rebootTime.Hour()) + time.Minute*time.Duration(rebootTime.Minute())))
+	targetTime := time.Date(now.Year(), now.Month(), now.Day(), rebootTime.Hour(), rebootTime.Minute(), 0, 0, now.Location())
+	durationUntilReboot := targetTime.Sub(now)
+
 	if durationUntilReboot < 0 {
 		durationUntilReboot += 24 * time.Hour // Schedule for the next day if time is in the past.
 	}
@@ -142,23 +153,25 @@ func scheduleAtSpecificTime(timeStr string, action string, message string, confi
 	return nil
 }
 
-func sendWallMessage(message string) {
+func sendWallMessage(message string) error {
 	// Send a message to all users on the system using the 'wall' command (Unix-like systems only).
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		if *(appFlags[verboseIndex].value.(*bool)) {
-			logger.Println("Wall message feature is not supported on this OS.")
-		}
-		return
+		logVerbose("Wall message feature is not supported on this OS.")
+		return fmt.Errorf("wall not supported on %s", runtime.GOOS)
 	}
 
-	if *(appFlags[verboseIndex].value.(*bool)) {
-		logger.Println("Sending wall message.")
-	}
-	cmd := exec.Command("wall", message)
-	err := cmd.Run()
-	if err != nil {
+	logVerbose("Sending wall message: " + message)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "wall", message)
+	if err := cmd.Run(); err != nil {
 		logger.Printf("Failed to send wall message: %v\n", err)
+		return err
 	}
+
+	return nil
 }
 
 func executeAction(action string, message string, confirmation bool) {
@@ -170,65 +183,103 @@ func executeAction(action string, message string, confirmation bool) {
 	}
 
 	if message != "" {
-		sendWallMessage(message)
+		if err := sendWallMessage(message); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to send message: %v\n", err)
+		}
 	}
 
 	logVerbose("Executing " + action + " action.")
-	executeSystemCommand(action)
+	if err := executeSystemCommand(action); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Failed to execute %s: %v\n", action, err)
+		logger.Printf("Failed to execute %s: %v\n", action, err)
+		os.Exit(1)
+	}
 }
 
 func confirmAction() bool {
 	// Prompt the user for confirmation before proceeding with an action.
-	fmt.Println("Are you sure you want to proceed with the action? (y/n)")
-	timer := time.NewTimer(time.Duration(getFlagInt(confirmTimeoutIndex)) * time.Second)
+	fmt.Print("Are you sure you want to proceed with the action? (y/n): ")
+	timeout := getFlagInt(confirmTimeoutIndex)
+	timer := time.NewTimer(time.Duration(timeout) * time.Second)
 	responseChan := make(chan string, 1)
+
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
-		response, _ := reader.ReadString('\n')
-		responseChan <- response
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			responseChan <- ""
+			return
+		}
+		responseChan <- strings.TrimSpace(response)
 	}()
 
 	select {
 	case <-timer.C:
-		fmt.Println("\nConfirmation timer expired, proceeding with action.")
-		return true
+		fmt.Println("\nConfirmation timeout expired. Action cancelled for safety.")
+		logger.Println("Confirmation timeout expired. Action cancelled.")
+		return false
 	case response := <-responseChan:
 		timer.Stop()
-		return response[0] == 'y' || response[0] == 'Y'
+		if len(response) == 0 {
+			return false
+		}
+		confirmed := response[0] == 'y' || response[0] == 'Y'
+		if !confirmed {
+			logger.Println("User declined confirmation.")
+		}
+		return confirmed
 	}
 }
 
-func executeSystemCommand(action string) {
+func executeSystemCommand(action string) error {
 	// Execute the system command associated with the specified action.
 	var cmd *exec.Cmd
 
 	switch runtime.GOOS {
 	case "linux":
+		// Use systemctl for modern Linux systems
 		cmd = exec.Command("systemctl", action)
 	case "windows":
-		if action == "reboot" {
+		switch action {
+		case "reboot":
 			cmd = exec.Command("shutdown", "/r", "/t", "0")
-		} else if action == "poweroff" {
+		case "poweroff", "halt":
 			cmd = exec.Command("shutdown", "/s", "/t", "0")
+		default:
+			return fmt.Errorf("unsupported action for Windows: %s", action)
 		}
 	case "darwin":
-		if action == "reboot" {
-			cmd = exec.Command("sudo", "shutdown", "-r", "now")
-		} else if action == "poweroff" {
-			cmd = exec.Command("sudo", "shutdown", "-h", "now")
-		} else if action == "halt" {
-			cmd = exec.Command("sudo", "halt")
+		// Check if running with appropriate privileges
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("root privileges required (run with sudo)")
+		}
+
+		switch action {
+		case "reboot":
+			cmd = exec.Command("shutdown", "-r", "now")
+		case "poweroff":
+			cmd = exec.Command("shutdown", "-h", "now")
+		case "halt":
+			cmd = exec.Command("halt")
+		default:
+			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
 	default:
-		logger.Printf("Unsupported action or OS: %s on %s", action, runtime.GOOS)
-		return
+		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
 
-	if err := cmd.Run(); err != nil {
-		logger.Printf("Failed to execute %s: %v\n", action, err)
-	} else {
-		logger.Printf("%s action executed successfully.\n", action)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, string(output))
 	}
+
+	logger.Printf("%s action executed successfully.\n", action)
+	return nil
 }
 
 func getFlagInt(index int) int {
@@ -240,10 +291,20 @@ func logVerbose(message string) {
 	// Log a message if verbose output is enabled.
 	if *(appFlags[verboseIndex].value.(*bool)) {
 		logger.Println(message)
+		fmt.Println(message)
+	}
+}
+
+func cleanup() {
+	// Close log file handle
+	if logWriter != nil {
+		logWriter.Close()
 	}
 }
 
 func main() {
+	defer cleanup()
+
 	// Parse the command-line flags.
 	flag.Parse()
 
@@ -253,12 +314,36 @@ func main() {
 		os.Exit(0)
 	}
 
+	// Validate that user has appropriate privileges on Unix systems
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
+		logger.Println("Attempted to run without root privileges.")
+		os.Exit(1)
+	}
+
 	// Determine the action to take based on flags provided by the user.
 	action := "reboot" // Default action is to reboot.
+	conflictingFlags := 0
+
 	if *(appFlags[haltIndex].value.(*bool)) {
 		action = "halt"
-	} else if *(appFlags[poweroffIndex].value.(*bool)) || *(appFlags[shutdownIndex].value.(*bool)) { // Modified line
+		conflictingFlags++
+	}
+	if *(appFlags[poweroffIndex].value.(*bool)) {
 		action = "poweroff"
+		conflictingFlags++
+	}
+	if *(appFlags[shutdownIndex].value.(*bool)) {
+		action = "poweroff"
+		conflictingFlags++
+	}
+	if *(appFlags[rebootIndex].value.(*bool)) && conflictingFlags > 0 {
+		conflictingFlags++
+	}
+
+	if conflictingFlags > 1 {
+		fmt.Fprintf(os.Stderr, "Error: Multiple conflicting actions specified. Choose only one.\n")
+		os.Exit(1)
 	}
 
 	// Handle scheduled time if provided.
@@ -280,6 +365,7 @@ func handleScheduledTime(timeStr, action string) {
 	if err := scheduleAtSpecificTime(timeStr, action, message, confirmation); err != nil {
 		logger.Printf("Error scheduling action: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
