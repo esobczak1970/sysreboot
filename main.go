@@ -476,7 +476,7 @@ func showScheduleStatus() error {
 	// Check if process is still running
 	if !processExists(info.PID) {
 		fmt.Println("No active scheduled actions (stale PID file found).")
-		removePIDFile()
+		_ = removePIDFile()
 		return nil
 	}
 
@@ -596,7 +596,7 @@ func handleScheduledTime(timeStr, action string) {
 	}
 
 	// Ensure PID file is removed when done
-	defer removePIDFile()
+	defer func() { _ = removePIDFile() }()
 
 	// Attempt to schedule and handle errors if any.
 	if err := scheduleAtSpecificTime(timeStr, action, message, confirmation); err != nil {
@@ -625,7 +625,7 @@ func handleDelay(delay int, action string) {
 		}
 
 		// Ensure PID file is removed when done
-		defer removePIDFile()
+		defer func() { _ = removePIDFile() }()
 
 		// Set up signal handling for cancellation
 		sigChan := make(chan os.Signal, 1)

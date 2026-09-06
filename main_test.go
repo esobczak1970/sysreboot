@@ -92,7 +92,7 @@ func TestCustomUsage(t *testing.T) {
 	os.Stderr = old
 
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r)
 	output := buf.String()
 
 	expectedStrings := []string{
@@ -293,7 +293,7 @@ func TestConfirmAction(t *testing.T) {
 			go func() {
 				if tt.input != "" {
 					time.Sleep(100 * time.Millisecond)
-					w.Write([]byte(tt.input))
+					_, _ = w.Write([]byte(tt.input))
 				}
 				// For timeout test, don't write anything
 				if tt.wantMsg == "timeout" {
@@ -311,7 +311,7 @@ func TestConfirmAction(t *testing.T) {
 
 			// Read output
 			var buf bytes.Buffer
-			io.Copy(&buf, rOut)
+			_, _ = io.Copy(&buf, rOut)
 			output := buf.String()
 
 			if result != tt.expected {
@@ -449,7 +449,7 @@ func TestLogVerbose(t *testing.T) {
 			os.Stdout = oldStdout
 
 			var stdoutBuf bytes.Buffer
-			io.Copy(&stdoutBuf, r)
+			_, _ = io.Copy(&stdoutBuf, r)
 
 			logOutput := buf.String()
 			stdoutOutput := stdoutBuf.String()
@@ -541,7 +541,7 @@ func TestExecuteAction(t *testing.T) {
 				r, w, _ := os.Pipe()
 				os.Stdin = r
 				go func() {
-					w.Write([]byte(tt.confirmInput))
+					_, _ = w.Write([]byte(tt.confirmInput))
 					w.Close()
 				}()
 				defer func() { os.Stdin = oldStdin }()
@@ -572,7 +572,7 @@ func TestExecuteActionCancelled(t *testing.T) {
 
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		w.Write([]byte("n\n"))
+		_, _ = w.Write([]byte("n\n"))
 		w.Close()
 	}()
 
@@ -583,7 +583,7 @@ func TestExecuteActionCancelled(t *testing.T) {
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
-	io.Copy(&buf, rOut)
+	_, _ = io.Copy(&buf, rOut)
 	output := buf.String()
 
 	if !strings.Contains(output, "cancelled") {
@@ -623,7 +623,7 @@ func TestHandleScheduledTime(t *testing.T) {
 			os.Stderr = oldStderr
 
 			var buf bytes.Buffer
-			io.Copy(&buf, r)
+			_, _ = io.Copy(&buf, r)
 
 			if tt.wantErr && err == nil {
 				t.Error("scheduleAtSpecificTime() should return error for invalid time")
@@ -704,7 +704,7 @@ func TestMain_VersionFlag(t *testing.T) {
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
-	io.Copy(&buf, r)
+	_, _ = io.Copy(&buf, r)
 	output := buf.String()
 
 	if !strings.Contains(output, appVersion) {
@@ -823,6 +823,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 func TestAppFlagsIndexOrder(t *testing.T) {
 	// Verify that flag indices match appFlags order
 	expectedOrder := []string{
+		"cancel",
 		"confirm",
 		"confirm-timeout",
 		"delay",
@@ -831,6 +832,7 @@ func TestAppFlagsIndexOrder(t *testing.T) {
 		"poweroff",
 		"reboot",
 		"shutdown",
+		"status",
 		"time",
 		"verbose",
 		"version",
@@ -1260,7 +1262,7 @@ func TestExecuteActionWithConfirmation(t *testing.T) {
 	
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		w.Write([]byte("y\n"))
+		_, _ = w.Write([]byte("y\n"))
 		w.Close()
 	}()
 	
