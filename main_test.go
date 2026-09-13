@@ -1537,3 +1537,53 @@ func TestMainWithNonRootUnix(t *testing.T) {
 		t.Log("Confirmed running as non-root (would fail in main())")
 	}
 }
+
+func TestProcessExists(t *testing.T) {
+	// The current process should always exist
+	if !processExists(os.Getpid()) {
+		t.Error("processExists returned false for current process")
+	}
+
+	// Process 999999 is highly unlikely to exist
+	if processExists(999999) {
+		t.Error("processExists returned true for non-existent process (999999)")
+	}
+}
+
+func TestShowScheduleStatus(t *testing.T) {
+	setupTestLogger()
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	err := showScheduleStatus()
+
+	wOut.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Errorf("showScheduleStatus returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, rOut)
+	output := buf.String()
+
+	if !strings.Contains(output, "No scheduled actions pending.") {
+		t.Errorf("showScheduleStatus output = %v, want to contain 'No scheduled actions pending.'", output)
+	}
+}
+
+func TestCancelScheduledAction(t *testing.T) {
+	setupTestLogger()
+
+	err := cancelScheduledAction()
+
+	if err == nil {
+		t.Error("cancelScheduledAction should return error when no schedule exists")
+	} else if !strings.Contains(err.Error(), "no scheduled action found") {
+		t.Errorf("cancelScheduledAction expected error containing 'no scheduled action found', got: %v", err)
+	}
+}
