@@ -1,49 +1,127 @@
-# sysreboot - Enhanced Reboot and Shutdown Utility
+# sysreboot command guide
 
-`sysreboot` is an intuitive command-line utility designed to manage system reboots and shutdowns with enhanced safety and user-friendly features. It simplifies the execution of restarts and shutdowns, offering a significant improvement over traditional commands.
+\`sysreboot\` is a privileged system-action utility for rebooting, powering off,
+halting, scheduling, inspecting, and cancelling actions.
 
-## Features
+The root [README](../README.md) contains the project overview and development
+workflow. This document focuses on runtime behavior.
 
-- **Safe Defaults**: Reboot with a delay unless specified with `-d 0` for an immediate reboot.
-- **Explicit Confirmation**: Shutdown operations require confirmation to avoid accidental power-offs.
-- **Simplified Scheduling**: Easily schedule reboots or shutdowns with a specific time or after a delay.
-- **Communication Clarity**: Send custom broadcast messages before system actions.
-- **Detailed Feedback**: Opt for verbose output to monitor system actions closely.
+## Safety model
 
-## Comparative Advantages
+The current implementation has these important defaults:
 
-Here's how `sysreboot` simplifies system management compared to traditional commands:
+- The default action is an immediate reboot.
+- The default delay is zero minutes.
+- Confirmation is optional and is enabled with \`--confirm\` or \`-c\`.
+- Scheduled or delayed actions write a PID/status file so they can be inspected
+  or cancelled.
+- On Unix-like systems the program requires root privileges before performing
+  system actions.
+- Confirmation expires after 10 seconds by default and cancels the action when
+  no affirmative response is received.
 
-| Action | sysreboot Command | Traditional Command(s) |
-| ------ | ----------------- | ---------------------- |
-| Immediate Reboot | `sysreboot -d 0` | `reboot` or `shutdown -r now` |
-| Confirmed Shutdown | `sysreboot --shutdown --confirm` | `shutdown -h now "Confirm shutdown? y/n:" && read confirmation` |
-| Scheduled Reboot | `sysreboot --time "23:30" -m "Scheduled reboot at 23:30"` | `echo "shutdown -r now" \| at 23:30` |
-| Delayed Reboot | `sysreboot -d 5 -m "Rebooting in 5 minutes"` | `sleep 300 && shutdown -r now` |
-| Halt with Delay | `sysreboot --halt` | `shutdown -H +1 "Halt in 1 minute"` |
-| Verbose Logging | `sysreboot -vb` | `shutdown -v -r now` |
+Because the default action is destructive, use \`--help\`, \`--status\`, and
+explicit action flags carefully.
 
-## Additional Features
+## Build
 
-- **Countdown**: Utilize `--countdown` (`-co`) to display a countdown to the action.
-- **Background Execution**: Use `--background` (`-b`) to send the command to run in the background.
+\`\`\`bash
+make check
+make build
+\`\`\`
 
-## Getting Started
+The resulting executable is \`bin/sysreboot\`.
 
-To start using `sysreboot`, follow these steps:
+## Common actions
 
-```sh
-git clone https://github.com/esobczak1970/sysreboot.git
-cd sysreboot
-go build
-```
+Immediate reboot:
 
-## Contributing
+\`\`\`bash
+sudo ./bin/sysreboot --reboot
+\`\`\`
 
-Your contributions can help improve `sysreboot`. Feel free to report issues, fork the repository, and submit pull requests.
+Power off with confirmation:
 
-## License
+\`\`\`bash
+sudo ./bin/sysreboot --poweroff --confirm
+\`\`\`
 
-`sysreboot` is made available under the MIT License. Refer to [LICENSE.md](LICENSE.md) for details.
+\`--shutdown\` is an alias for power off.
 
----
+Halt:
+
+\`\`\`bash
+sudo ./bin/sysreboot --halt
+\`\`\`
+
+Delay an action by five minutes:
+
+\`\`\`bash
+sudo ./bin/sysreboot --reboot --delay 5 \
+  --message "System will reboot in 5 minutes"
+\`\`\`
+
+Schedule an action for a local 24-hour clock time:
+
+\`\`\`bash
+sudo ./bin/sysreboot --reboot --time "23:30"
+\`\`\`
+
+## Scheduled-action management
+
+Show the current scheduled action:
+
+\`\`\`bash
+sudo ./bin/sysreboot --status
+\`\`\`
+
+Cancel it:
+
+\`\`\`bash
+sudo ./bin/sysreboot --cancel
+\`\`\`
+
+Scheduled and delayed actions use a PID/status file. Unix systems prefer
+\`/var/run/sysreboot.pid\` and fall back to a temporary location when needed.
+
+## Messaging and verbosity
+
+Broadcast a message before the action:
+
+\`\`\`bash
+sudo ./bin/sysreboot --reboot --message "Maintenance reboot"
+\`\`\`
+
+On Linux and macOS this uses the system \`wall\` command when available.
+
+Enable verbose logging with:
+
+\`\`\`bash
+sudo ./bin/sysreboot --verbose
+\`\`\`
+
+## Platform behavior
+
+- Linux uses \`systemctl\`.
+- macOS uses \`shutdown\` or \`halt\` and requires root privileges.
+- Windows uses the native \`shutdown\` command for reboot and power-off actions.
+
+Exact operating-system behavior should be verified before using the utility on
+production systems.
+
+## Development
+
+Use the root Makefile:
+
+\`\`\`bash
+make help
+make doctor
+make test
+make test-race
+make coverage
+make lint
+make check
+\`\`\`
+
+The command implementation in \`main.go\` is authoritative when older planning
+or historical notes disagree with this guide.
