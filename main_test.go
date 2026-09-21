@@ -88,7 +88,7 @@ func TestCustomUsage(t *testing.T) {
 
 	customUsage()
 
-	w.Close()
+	_ = w.Close()
 	os.Stderr = old
 
 	var buf bytes.Buffer
@@ -304,9 +304,9 @@ func TestConfirmAction(t *testing.T) {
 			result := confirmAction()
 
 			// Cleanup
-			w.Close()
+			_ = w.Close()
 			os.Stdin = oldStdin
-			wOut.Close()
+			_ = wOut.Close()
 			os.Stdout = oldStdout
 
 			// Read output
@@ -445,7 +445,7 @@ func TestLogVerbose(t *testing.T) {
 
 			logVerbose(tt.message)
 
-			w.Close()
+			_ = w.Close()
 			os.Stdout = oldStdout
 
 			var stdoutBuf bytes.Buffer
@@ -490,7 +490,7 @@ func TestCleanup(t *testing.T) {
 	}
 
 	// Cleanup temp file
-	os.Remove(tmpPath)
+	_ = os.Remove(tmpPath)
 }
 
 func TestCleanupNilWriter(t *testing.T) {
@@ -578,7 +578,7 @@ func TestExecuteActionCancelled(t *testing.T) {
 
 	executeAction("reboot", "", true)
 
-	wOut.Close()
+	_ = wOut.Close()
 	os.Stdin = oldStdin
 	os.Stdout = oldStdout
 
@@ -1139,18 +1139,18 @@ func TestGetLogFileDirectoryWindowsFallback(t *testing.T) {
 		originalAppData := os.Getenv("APPDATA")
 		originalHome := os.Getenv("HOME")
 		
-		os.Unsetenv("APPDATA")
-		os.Setenv("HOME", "")
+		_ = os.Unsetenv("APPDATA")
+		_ = os.Setenv("HOME", "")
 		
 		// Test Windows path with no APPDATA
 		// (Can't actually change GOOS, but we test the logic)
 		
 		// Restore
 		if originalAppData != "" {
-			os.Setenv("APPDATA", originalAppData)
+			_ = os.Setenv("APPDATA", originalAppData)
 		}
 		if originalHome != "" {
-			os.Setenv("HOME", originalHome)
+			_ = os.Setenv("HOME", originalHome)
 		}
 	}
 	
@@ -1560,7 +1560,7 @@ func TestShowScheduleStatus(t *testing.T) {
 
 	err := showScheduleStatus()
 
-	wOut.Close()
+	_ = wOut.Close()
 	os.Stdout = oldStdout
 
 	if err != nil {

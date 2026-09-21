@@ -503,7 +503,7 @@ func showScheduleStatus() error {
 func cleanup() {
 	// Close log file handle
 	if logWriter != nil {
-		logWriter.Close()
+		_ = logWriter.Close()
 	}
 }
 
