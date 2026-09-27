@@ -542,7 +542,7 @@ func TestExecuteAction(t *testing.T) {
 				os.Stdin = r
 				go func() {
 					_, _ = w.Write([]byte(tt.confirmInput))
-					w.Close()
+					_ = w.Close()
 				}()
 				defer func() { os.Stdin = oldStdin }()
 			}
@@ -573,7 +573,7 @@ func TestExecuteActionCancelled(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		_, _ = w.Write([]byte("n\n"))
-		w.Close()
+		_ = w.Close()
 	}()
 
 	executeAction("reboot", "", true)
@@ -619,7 +619,7 @@ func TestHandleScheduledTime(t *testing.T) {
 			// Test the error handling without actually exiting
 			err := scheduleAtSpecificTime(tt.timeStr, tt.action, "", false)
 
-			w.Close()
+			_ = w.Close()
 			os.Stderr = oldStderr
 
 			var buf bytes.Buffer
@@ -700,7 +700,7 @@ func TestMain_VersionFlag(t *testing.T) {
 		fmt.Printf("%s version %s\n", appName, appVersion)
 	}
 
-	w.Close()
+	_ = w.Close()
 	os.Stdout = oldStdout
 
 	var buf bytes.Buffer
@@ -1263,7 +1263,7 @@ func TestExecuteActionWithConfirmation(t *testing.T) {
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		_, _ = w.Write([]byte("y\n"))
-		w.Close()
+		_ = w.Close()
 	}()
 	
 	// This will try to execute but fail without privileges (expected)
