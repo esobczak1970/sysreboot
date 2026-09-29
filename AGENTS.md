@@ -39,6 +39,11 @@ same change.
   target can own the workflow.
 - Keep dependency and tool versions aligned with the repository's committed
   configuration.
+- Keep `golangci-lint` on its v2 module path and repository-pinned v2.x
+  release. Never downgrade to v1 to work around a Go-version error. If lint
+  reports that it was built with an older Go version than the project targets,
+  rebuild the pinned v2 binary with the repository Go toolchain; `make lint`
+  verifies this automatically.
 
 ## Scope and code quality
 
