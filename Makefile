@@ -46,8 +46,8 @@ all: build
 doctor:
 	@command -v "$(GO)" >/dev/null || { echo "Go is required but was not found in PATH." >&2; exit 1; }
 	@$(GO) version
-	@actual="$(GOTOOLCHAIN=local $(GO) env GOVERSION)"; expected="go$(GO_VERSION)"; \
-	if [[ "$actual" != "$expected" ]]; then echo "Go toolchain mismatch: expected $expected from .go-version, got $actual." >&2; exit 1; fi
+	@actual="$$(GOTOOLCHAIN=local $(GO) env GOVERSION)"; expected="go$(GO_VERSION)"; \
+	if [[ "$$actual" != "$$expected" ]]; then echo "Go toolchain mismatch: expected $$expected from .go-version, got $$actual." >&2; exit 1; fi
 	@$(GO) env GOMOD
 
 deps: doctor
