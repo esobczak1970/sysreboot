@@ -369,7 +369,17 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 		return fmt.Errorf("failed to marshal schedule info: %v", err)
 	}
 
-	if err := os.WriteFile(pidPath, data, 0644); err != nil {
+	// Remove any existing stale PID file or symlink
+	_ = os.Remove(pidPath)
+
+	// Create a new PID file securely
+	f, err := os.OpenFile(pidPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create PID file: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("failed to write PID file: %v", err)
 	}
 
