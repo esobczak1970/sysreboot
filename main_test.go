@@ -1590,6 +1590,68 @@ func TestCancelScheduledAction(t *testing.T) {
 }
 
 
+func TestReadPIDFile(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	pidPath := getPIDFilePath()
+
+	t.Run("valid file", func(t *testing.T) {
+		validJSON := `{"pid":12345,"action":"reboot","delay_minutes":5,"message":"Test message"}`
+		if err := os.WriteFile(pidPath, []byte(validJSON), 0600); err != nil {
+			t.Fatalf("failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err != nil {
+			t.Fatalf("readPIDFile returned unexpected error: %v", err)
+		}
+		if info == nil {
+			t.Fatal("readPIDFile returned nil ScheduleInfo")
+		}
+		if info.PID != 12345 || info.Action != ActionReboot || info.Delay != 5 || info.Message != "Test message" {
+			t.Errorf("unexpected ScheduleInfo: %+v", info)
+		}
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		if err := os.WriteFile(pidPath, []byte(`{ invalid json }`), 0600); err != nil {
+			t.Fatalf("failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for invalid JSON")
+		}
+		if !strings.Contains(err.Error(), "failed to parse PID file") {
+			t.Errorf("error = %q, want parse error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("failed to remove test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for missing file")
+		}
+		if !strings.Contains(err.Error(), "no scheduled action found") {
+			t.Errorf("error = %q, want missing-file error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+}
+
 func TestWritePIDFile(t *testing.T) {
 	setupTestLogger()
 
