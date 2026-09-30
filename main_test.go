@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -156,23 +155,23 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if !tt.expectError {
-				// Use a very short future time and cancel context to avoid actual execution
-				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-				defer cancel()
+				testCancelChan = make(chan struct{})
+				defer func() {
+					testCancelChan = nil
+				}()
 
 				errChan := make(chan error, 1)
 				go func() {
 					errChan <- scheduleAtSpecificTime(tt.timeStr, tt.action, tt.message, tt.confirmation)
 				}()
 
-				select {
-				case <-ctx.Done():
-					// Test passed - we scheduled but didn't execute
-					return
-				case err := <-errChan:
-					if err != nil {
-						t.Errorf("scheduleAtSpecificTime() unexpected error = %v", err)
-					}
+				// Cancel the test immediately to unblock scheduleAtSpecificTime
+				close(testCancelChan)
+
+				// Wait for goroutine to return so we don't leak it
+				err := <-errChan
+				if err != nil {
+					t.Errorf("scheduleAtSpecificTime() unexpected error = %v", err)
 				}
 			} else {
 				err := scheduleAtSpecificTime(tt.timeStr, tt.action, tt.message, tt.confirmation)
@@ -300,12 +299,17 @@ func TestConfirmAction(t *testing.T) {
 				if tt.wantMsg == "timeout" {
 					time.Sleep(time.Duration(tt.timeout+1) * time.Second)
 				}
+
+				// Close the write end of the pipe after providing input or timing out
+				// This ensures bufio.NewReader(os.Stdin).ReadString('\n') stops blocking
+				_ = w.Close()
 			}()
 
 			result := confirmAction()
 
 			// Cleanup
-			_ = w.Close()
+			// Also close read end of pipe to immediately interrupt blocked readers
+			_ = r.Close()
 			os.Stdin = oldStdin
 			_ = wOut.Close()
 			os.Stdout = oldStdout
@@ -930,23 +934,21 @@ func TestScheduleAtSpecificTimePastTime(t *testing.T) {
 	// Use a time in the past (should schedule for tomorrow)
 	pastTime := time.Now().Add(-1 * time.Hour).Format("15:04")
 
-	// Run with timeout to avoid waiting
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	testCancelChan = make(chan struct{})
+	defer func() {
+		testCancelChan = nil
+	}()
 
 	errChan := make(chan error, 1)
 	go func() {
 		errChan <- scheduleAtSpecificTime(pastTime, ActionReboot, "", false)
 	}()
 
-	select {
-	case <-ctx.Done():
-		// Expected - we're testing the scheduling logic, not execution
-		return
-	case err := <-errChan:
-		if err != nil {
-			t.Errorf("scheduleAtSpecificTime() with past time error = %v", err)
-		}
+	// Signal cleanup and wait to avoid leaking the goroutine
+	close(testCancelChan)
+	err := <-errChan
+	if err != nil {
+		t.Errorf("scheduleAtSpecificTime() with past time error = %v", err)
 	}
 }
 
@@ -1028,26 +1030,24 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 	// Test with a very short future time
 	futureTime := time.Now().Add(2 * time.Second).Format("15:04")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
+	testCancelChan = make(chan struct{})
+	defer func() {
+		testCancelChan = nil
+	}()
 
 	done := make(chan bool)
 	go func() {
-		// This will schedule but not complete due to context timeout
+		// This will schedule but not complete
 		*appFlags[messageIndex].value.(*string) = "test"
 		*appFlags[confirmIndex].value.(*bool) = false
 		handleScheduledTime(futureTime, ActionReboot)
 		done <- true
 	}()
 
-	select {
-	case <-ctx.Done():
-		// Expected - we're just testing the scheduling works
-		t.Log("handleScheduledTime scheduled successfully (timeout expected)")
-	case <-done:
-		// If it completes, that's fine too (shouldn't happen)
-		t.Log("handleScheduledTime completed")
-	}
+	// Signal cleanup and wait to avoid leaking the goroutine
+	close(testCancelChan)
+	<-done
+	t.Log("handleScheduledTime scheduled and cancelled successfully")
 }
 
 // TestHandleDelaySuccess tests the delay functionality
@@ -1588,7 +1588,6 @@ func TestCancelScheduledAction(t *testing.T) {
 		t.Errorf("cancelScheduledAction expected error containing 'no scheduled action found', got: %v", err)
 	}
 }
-
 
 func TestReadPIDFile(t *testing.T) {
 	setupTestLogger()

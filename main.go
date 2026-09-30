@@ -98,6 +98,7 @@ var (
 	pidFileDirOverride string
 	cachedPIDFilePath  string
 	pidFilePathOnce    sync.Once
+	testCancelChan     chan struct{} // Used by tests to cleanly terminate scheduling wait loops
 )
 
 // ScheduleInfo holds information about a scheduled action
@@ -210,6 +211,10 @@ func scheduleAtSpecificTime(timeStr string, action string, message string, confi
 		timer.Stop()
 		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
 		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
+		return nil
+	case <-testCancelChan:
+		// Test initiated cancellation
+		timer.Stop()
 		return nil
 	}
 
