@@ -78,8 +78,8 @@ var (
 	logWriter io.WriteCloser
 )
 
-// Constants for PID file management
-const (
+// Variables for PID file management, var rather than const to allow mocking in tests
+var (
 	pidFileDir    = "/var/run" // Primary location for PID files (Unix)
 	pidFileDirAlt = "/tmp"     // Fallback location for PID files
 	pidFileName   = "sysreboot.pid"

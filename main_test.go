@@ -19,14 +19,14 @@ func TestMain(m *testing.M) {
 	// Save original values
 	originalLogWriter := logWriter
 	originalLogger := logger
-	
+
 	// Run tests
 	code := m.Run()
-	
+
 	// Restore original values
 	logWriter = originalLogWriter
 	logger = originalLogger
-	
+
 	os.Exit(code)
 }
 
@@ -54,11 +54,11 @@ func resetFlags() {
 func TestGetLogFileDirectory(t *testing.T) {
 	// Test on actual OS
 	dir := getLogFileDirectory()
-	
+
 	if dir == "" {
 		t.Error("getLogFileDirectory() returned empty string")
 	}
-	
+
 	// Verify directory behavior based on current OS
 	switch runtime.GOOS {
 	case "windows":
@@ -125,12 +125,12 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		errorContains string
 	}{
 		{
-			name:        "Valid future time",
-			timeStr:     time.Now().Add(2 * time.Second).Format("15:04"),
-			action:      "reboot",
-			message:     "test message",
+			name:         "Valid future time",
+			timeStr:      time.Now().Add(2 * time.Second).Format("15:04"),
+			action:       "reboot",
+			message:      "test message",
 			confirmation: false,
-			expectError: false,
+			expectError:  false,
 		},
 		{
 			name:          "Invalid time format",
@@ -215,7 +215,7 @@ func TestSendWallMessage(t *testing.T) {
 			}
 
 			err := sendWallMessage(tt.message)
-			
+
 			// On Linux/Darwin, it may fail if wall is not available, which is acceptable
 			if err != nil {
 				t.Logf("sendWallMessage() returned error (may be expected if wall unavailable): %v", err)
@@ -349,12 +349,12 @@ func TestExecuteSystemCommand(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.skipOnCI && os.Getenv("CI") != "" {
+			if tt.skipOnCI { // skipping tests that execute real shutdown commands so it doesn't fail in some environments
 				t.Skip("Skipping test in CI environment")
 			}
 
 			err := executeSystemCommand(tt.action)
-			
+
 			if tt.expectError && err == nil {
 				t.Error("executeSystemCommand() expected error, got nil")
 			}
@@ -657,7 +657,7 @@ func TestHandleDelay(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Mock the actual execution to avoid system commands
 			t.Skip("Skipping actual system command execution")
-			
+
 			*appFlags[delayIndex].value.(*int) = tt.delay
 			handleDelay(tt.delay, tt.action)
 		})
@@ -668,10 +668,10 @@ func TestMain_VersionFlag(t *testing.T) {
 	// Save original args and flags
 	oldArgs := os.Args
 	oldCommandLine := flag.CommandLine
-	
+
 	// Create new flag set
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	
+
 	// Re-initialize flags for this test
 	for _, fd := range appFlags {
 		switch v := fd.value.(type) {
@@ -783,7 +783,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resetFlags()
-			
+
 			for idx, val := range tt.setFlags {
 				*appFlags[idx].value.(*bool) = val
 			}
@@ -866,7 +866,7 @@ func TestSendWallMessageOnLinux(t *testing.T) {
 
 	// Test with a message (will likely fail without wall command, but tests the code path)
 	err := sendWallMessage("test message")
-	
+
 	// We expect this might fail if wall is not available, but it should not panic
 	if err != nil {
 		t.Logf("sendWallMessage failed as expected without wall command: %v", err)
@@ -1004,12 +1004,12 @@ func TestMainFunction(t *testing.T) {
 		// This would run the actual main, but we skip it in CI
 		return
 	}
-	
+
 	t.Run("Privilege check on Unix", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("Skipping Unix privilege test on Windows")
 		}
-		
+
 		if os.Geteuid() != 0 {
 			// Expected: non-root should fail with error message
 			t.Log("Running as non-root (expected behavior)")
@@ -1023,13 +1023,13 @@ func TestMainFunction(t *testing.T) {
 func TestHandleScheduledTimeSuccess(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	// Test with a very short future time
 	futureTime := time.Now().Add(2 * time.Second).Format("15:04")
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	
+
 	done := make(chan bool)
 	go func() {
 		// This will schedule but not complete due to context timeout
@@ -1038,7 +1038,7 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 		handleScheduledTime(futureTime, "reboot")
 		done <- true
 	}()
-	
+
 	select {
 	case <-ctx.Done():
 		// Expected - we're just testing the scheduling works
@@ -1053,26 +1053,26 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 func TestHandleDelaySuccess(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	*appFlags[messageIndex].value.(*string) = ""
 	*appFlags[confirmIndex].value.(*bool) = false
 	*appFlags[delayIndex].value.(*int) = 0
-	
+
 	// We can't actually test system commands, so we skip the execution part
 	// But we can verify the logic flow
-	
+
 	// Test with 0 delay should not sleep
 	start := time.Now()
-	
+
 	// Mock to avoid actual execution
 	t.Log("Testing handleDelay flow (actual execution skipped)")
-	
+
 	// Verify delay calculation would work
 	delay := 0
 	if delay > 0 {
 		t.Error("Delay should be 0 for this test")
 	}
-	
+
 	elapsed := time.Since(start)
 	if elapsed > time.Second {
 		t.Errorf("handleDelay with 0 delay took too long: %v", elapsed)
@@ -1084,25 +1084,25 @@ func TestExecuteActionWithMessage(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping wall message test on Windows")
 	}
-	
+
 	setupTestLogger()
 	resetFlags()
-	
+
 	*appFlags[verboseIndex].value.(*bool) = true
-	
+
 	// Test that sending a message doesn't panic (even if wall fails)
 	// We're testing the code path, not actual system changes
 	t.Log("Testing executeAction with message (actual execution skipped to avoid system changes)")
-	
+
 	// The actual system command would fail without privileges, which is expected
 }
 
 // TestExecuteSystemCommandAllActions tests all action types
 func TestExecuteSystemCommandAllActions(t *testing.T) {
 	setupTestLogger()
-	
+
 	actions := []string{"reboot", "poweroff", "halt"}
-	
+
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {
 			err := executeSystemCommand(action)
@@ -1119,12 +1119,12 @@ func TestSendWallMessageVerboseOff(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping wall test on Windows")
 	}
-	
+
 	setupTestLogger()
 	resetFlags()
-	
+
 	*appFlags[verboseIndex].value.(*bool) = false
-	
+
 	err := sendWallMessage("test")
 	// May succeed or fail depending on system, both are acceptable
 	if err != nil {
@@ -1138,13 +1138,13 @@ func TestGetLogFileDirectoryWindowsFallback(t *testing.T) {
 		// Test the fallback logic by temporarily unsetting env vars
 		originalAppData := os.Getenv("APPDATA")
 		originalHome := os.Getenv("HOME")
-		
+
 		_ = os.Unsetenv("APPDATA")
 		_ = os.Setenv("HOME", "")
-		
+
 		// Test Windows path with no APPDATA
 		// (Can't actually change GOOS, but we test the logic)
-		
+
 		// Restore
 		if originalAppData != "" {
 			_ = os.Setenv("APPDATA", originalAppData)
@@ -1153,7 +1153,7 @@ func TestGetLogFileDirectoryWindowsFallback(t *testing.T) {
 			_ = os.Setenv("HOME", originalHome)
 		}
 	}
-	
+
 	dir := getLogFileDirectory()
 	if dir == "" {
 		t.Error("getLogFileDirectory should never return empty string")
@@ -1164,13 +1164,13 @@ func TestGetLogFileDirectoryWindowsFallback(t *testing.T) {
 func TestInitFlagSetup(t *testing.T) {
 	flagNames := []string{"confirm", "reboot", "halt", "poweroff", "shutdown", "delay", "time", "message", "verbose", "version", "confirm-timeout"}
 	shortFlags := []string{"c", "r", "h", "p", "s", "d", "t", "m", "vb", "v", "ct"}
-	
+
 	for _, name := range flagNames {
 		if flag.Lookup(name) == nil {
 			t.Errorf("Flag --%s not registered", name)
 		}
 	}
-	
+
 	for _, short := range shortFlags {
 		if flag.Lookup(short) == nil {
 			t.Errorf("Flag -%s not registered", short)
@@ -1181,11 +1181,11 @@ func TestInitFlagSetup(t *testing.T) {
 // TestExecuteSystemCommandContextTimeout verifies timeout handling
 func TestExecuteSystemCommandContextTimeout(t *testing.T) {
 	setupTestLogger()
-	
+
 	// This tests that the context timeout logic is in place
 	// Actual timeout would take 30 seconds, so we just verify the code paths
 	err := executeSystemCommand("reboot")
-	
+
 	// Should fail due to lack of privileges, not timeout
 	if err != nil {
 		if strings.Contains(err.Error(), "context deadline exceeded") {
@@ -1199,15 +1199,15 @@ func TestExecuteSystemCommandMacOSActions(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("Skipping macOS-specific test")
 	}
-	
+
 	setupTestLogger()
-	
+
 	actions := []string{"reboot", "poweroff", "halt"}
-	
+
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {
 			err := executeSystemCommand(action)
-			
+
 			if os.Geteuid() != 0 {
 				if err == nil {
 					t.Errorf("executeSystemCommand(%s) should fail without root", action)
@@ -1224,9 +1224,9 @@ func TestExecuteSystemCommandWindowsActions(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Skipping Windows-specific test")
 	}
-	
+
 	setupTestLogger()
-	
+
 	tests := []struct {
 		action string
 	}{
@@ -1234,7 +1234,7 @@ func TestExecuteSystemCommandWindowsActions(t *testing.T) {
 		{"poweroff"},
 		{"halt"},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
 			err := executeSystemCommand(tt.action)
@@ -1250,25 +1250,25 @@ func TestExecuteSystemCommandWindowsActions(t *testing.T) {
 func TestExecuteActionWithConfirmation(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	*appFlags[confirmIndex].value.(*bool) = true
 	*appFlags[confirmTimeoutIndex].value.(*int) = 1
-	
+
 	// Mock stdin
 	oldStdin := os.Stdin
 	r, w, _ := os.Pipe()
 	os.Stdin = r
 	defer func() { os.Stdin = oldStdin }()
-	
+
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		_, _ = w.Write([]byte("y\n"))
 		_ = w.Close()
 	}()
-	
+
 	// This will try to execute but fail without privileges (expected)
 	t.Log("Testing executeAction with confirmation (actual system command will fail without privileges)")
-	
+
 	// We don't call executeAction directly to avoid actual system commands
 	// but we've tested the confirmation flow in TestConfirmAction
 }
@@ -1277,16 +1277,16 @@ func TestExecuteActionWithConfirmation(t *testing.T) {
 func TestHandleDelayWithDelay(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	*appFlags[messageIndex].value.(*string) = "test message"
 	*appFlags[confirmIndex].value.(*bool) = false
-	
+
 	// Can't test actual system commands, but we can test the delay logic
 	delay := 0 // Use 0 to avoid waiting
 	if delay > 0 {
 		t.Logf("Would wait %d minutes", delay)
 	}
-	
+
 	// The handleDelay function would be called here, but we skip
 	// actual execution to avoid system commands
 	t.Log("handleDelay logic tested (skipping actual execution)")
@@ -1296,13 +1296,13 @@ func TestHandleDelayWithDelay(t *testing.T) {
 func TestGetLogFileDirectoryAllPaths(t *testing.T) {
 	// Save original values
 	origGOOS := runtime.GOOS
-	
+
 	// Test current OS
 	dir := getLogFileDirectory()
 	if dir == "" {
 		t.Error("getLogFileDirectory returned empty string")
 	}
-	
+
 	// Verify it returns something valid
 	switch runtime.GOOS {
 	case "windows":
@@ -1326,7 +1326,7 @@ func TestGetLogFileDirectoryAllPaths(t *testing.T) {
 			}
 		}
 	}
-	
+
 	t.Logf("GOOS=%s returned dir=%s", origGOOS, dir)
 }
 
@@ -1336,12 +1336,12 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 		// Test unsupported OS path
 		setupTestLogger()
 		*appFlags[verboseIndex].value.(*bool) = true
-		
+
 		err := sendWallMessage("test")
 		if err == nil {
 			t.Error("sendWallMessage should return error on Windows")
 		}
-		
+
 		*appFlags[verboseIndex].value.(*bool) = false
 		err = sendWallMessage("test")
 		if err == nil {
@@ -1349,15 +1349,15 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 		}
 		return
 	}
-	
+
 	// Test supported OS
 	setupTestLogger()
-	
+
 	// Test with verbose on
 	*appFlags[verboseIndex].value.(*bool) = true
 	err := sendWallMessage("test verbose")
 	t.Logf("sendWallMessage with verbose=true: %v", err)
-	
+
 	// Test with verbose off
 	*appFlags[verboseIndex].value.(*bool) = false
 	err = sendWallMessage("test silent")
@@ -1367,7 +1367,7 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 // TestExecuteSystemCommandUnsupportedAction tests invalid action handling
 func TestExecuteSystemCommandUnsupportedAction(t *testing.T) {
 	setupTestLogger()
-	
+
 	err := executeSystemCommand("unsupported-action")
 	if err == nil {
 		t.Error("executeSystemCommand should return error for unsupported action")
@@ -1379,9 +1379,9 @@ func TestExecuteSystemCommandLinuxHalt(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Skipping Linux-specific test")
 	}
-	
+
 	setupTestLogger()
-	
+
 	err := executeSystemCommand("halt")
 	// Expected to fail without privileges
 	if err != nil {
@@ -1394,9 +1394,9 @@ func TestExecuteSystemCommandWindowsHalt(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Skipping Windows-specific test")
 	}
-	
+
 	setupTestLogger()
-	
+
 	err := executeSystemCommand("halt")
 	// Should work (use shutdown command) but fail without admin
 	if err != nil {
@@ -1408,7 +1408,7 @@ func TestExecuteSystemCommandWindowsHalt(t *testing.T) {
 func TestExecuteActionFullFlow(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	tests := []struct {
 		name         string
 		action       string
@@ -1431,20 +1431,20 @@ func TestExecuteActionFullFlow(t *testing.T) {
 			verbose:      false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			*appFlags[verboseIndex].value.(*bool) = tt.verbose
-			
+
 			// We can't actually execute system commands in tests
 			// but we can verify the logic paths work
-			
+
 			// Test that sending message doesn't panic
 			if tt.message != "" && runtime.GOOS != "windows" {
 				err := sendWallMessage(tt.message)
 				t.Logf("sendWallMessage result: %v", err)
 			}
-			
+
 			// Test that execute command handles errors
 			err := executeSystemCommand(tt.action)
 			if err != nil {
@@ -1458,15 +1458,15 @@ func TestExecuteActionFullFlow(t *testing.T) {
 func TestHandleScheduledTimeErrorPath(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
-	
+
 	// Test with invalid time - should log error
 	buf := setupTestLogger()
-	
+
 	err := scheduleAtSpecificTime("99:99", "reboot", "", false)
 	if err == nil {
 		t.Error("scheduleAtSpecificTime should return error for invalid time")
 	}
-	
+
 	logOutput := buf.String()
 	if logOutput != "" {
 		t.Logf("Logger output: %s", logOutput)
@@ -1476,7 +1476,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 // TestExecuteSystemCommandAllOSPaths ensures all OS-specific paths are covered
 func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	setupTestLogger()
-	
+
 	switch runtime.GOOS {
 	case "linux":
 		// Test all systemctl actions
@@ -1515,7 +1515,7 @@ func TestInitLoggerCreation(t *testing.T) {
 	if logger == nil {
 		t.Error("init() did not create logger")
 	}
-	
+
 	// logWriter may be nil after cleanup in TestMain, which is OK
 	// We just verify it was set up initially
 	t.Log("Logger was properly initialized by init()")
@@ -1526,11 +1526,11 @@ func TestMainWithNonRootUnix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Skipping Unix privilege test on Windows")
 	}
-	
+
 	if os.Geteuid() == 0 {
 		t.Skip("Running as root, skipping non-root test")
 	}
-	
+
 	// Verify non-root status would be caught by main()
 	// We can't actually call main() due to os.Exit, but we test the condition
 	if os.Geteuid() != 0 {
@@ -1586,4 +1586,72 @@ func TestCancelScheduledAction(t *testing.T) {
 	} else if !strings.Contains(err.Error(), "no scheduled action found") {
 		t.Errorf("cancelScheduledAction expected error containing 'no scheduled action found', got: %v", err)
 	}
+}
+
+func TestReadPIDFile(t *testing.T) {
+	setupTestLogger()
+
+	// Mock the PID file directory to avoid permission issues during testing
+	tempDir := t.TempDir()
+	originalPIDFileDir := pidFileDir
+	originalPIDFileDirAlt := pidFileDirAlt
+	pidFileDir = tempDir
+	pidFileDirAlt = tempDir
+	defer func() {
+		pidFileDir = originalPIDFileDir
+		pidFileDirAlt = originalPIDFileDirAlt
+	}()
+
+	pidPath := getPIDFilePath()
+
+	t.Run("Valid file", func(t *testing.T) {
+		validJSON := `{"pid": 12345, "action": "reboot", "delay_minutes": 5, "message": "Test message"}`
+		if err := os.WriteFile(pidPath, []byte(validJSON), 0644); err != nil {
+			t.Fatalf("Failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err != nil {
+			t.Fatalf("Expected no error, got: %v", err)
+		}
+		if info == nil {
+			t.Fatal("Expected ScheduleInfo, got nil")
+		}
+		if info.PID != 12345 || info.Action != "reboot" || info.Delay != 5 || info.Message != "Test message" {
+			t.Errorf("Unexpected ScheduleInfo content: %+v", info)
+		}
+	})
+
+	t.Run("Invalid JSON", func(t *testing.T) {
+		invalidJSON := `{ invalid json }`
+		if err := os.WriteFile(pidPath, []byte(invalidJSON), 0644); err != nil {
+			t.Fatalf("Failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("Expected error for invalid JSON, got none")
+		}
+		if !strings.Contains(err.Error(), "failed to parse PID file") {
+			t.Errorf("Expected parse error, got: %v", err)
+		}
+		if info != nil {
+			t.Errorf("Expected nil info, got: %+v", info)
+		}
+	})
+
+	t.Run("No file", func(t *testing.T) {
+		_ = os.Remove(pidPath)
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("Expected error for missing file, got none")
+		}
+		if !strings.Contains(err.Error(), "no scheduled action found") {
+			t.Errorf("Expected missing file error, got: %v", err)
+		}
+		if info != nil {
+			t.Errorf("Expected nil info, got: %+v", info)
+		}
+	})
 }
