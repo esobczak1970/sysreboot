@@ -80,9 +80,8 @@ var (
 
 // Constants for PID file management
 const (
-	pidFileDir    = "/var/run" // Primary location for PID files (Unix)
-	pidFileDirAlt = "/tmp"     // Fallback location for PID files
-	pidFileName   = "sysreboot.pid"
+	pidFileDir  = "/var/run" // Primary location for PID files (Unix)
+	pidFileName = "sysreboot.pid"
 )
 
 // ScheduleInfo holds information about a scheduled action
@@ -347,15 +346,8 @@ func getPIDFilePath() string {
 			return filepath.Join(pidFileDir, pidFileName)
 		}
 	}
-	// Fallback to /tmp or TEMP directory
-	tempDir := pidFileDirAlt
-	if runtime.GOOS == "windows" {
-		tempDir = os.Getenv("TEMP")
-		if tempDir == "" {
-			tempDir = os.TempDir()
-		}
-	}
-	return filepath.Join(tempDir, pidFileName)
+	// Fallback to temp directory
+	return filepath.Join(os.TempDir(), pidFileName)
 }
 
 // writePIDFile writes the current process PID and schedule info to a file
