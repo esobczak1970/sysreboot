@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -1649,4 +1650,60 @@ func TestReadPIDFile(t *testing.T) {
 			t.Errorf("info = %+v, want nil", info)
 		}
 	})
+}
+
+func TestWritePIDFile(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	_ = removePIDFile()
+	defer func() { _ = removePIDFile() }()
+
+	info := ScheduleInfo{
+		Action:  "test_action",
+		Delay:   5,
+		Message: "test message",
+	}
+
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("writePIDFile returned unexpected error: %v", err)
+	}
+
+	pidPath := getPIDFilePath()
+	fileInfo, err := os.Stat(pidPath)
+	if err != nil {
+		t.Fatalf("PID file was not created at expected path %s: %v", pidPath, err)
+	}
+	if fileInfo.Mode().Perm() != 0600 {
+		t.Errorf("PID file permissions = %o, want 600", fileInfo.Mode().Perm())
+	}
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("failed to read created PID file: %v", err)
+	}
+
+	var parsedInfo ScheduleInfo
+	if err := json.Unmarshal(data, &parsedInfo); err != nil {
+		t.Fatalf("failed to parse PID file JSON: %v", err)
+	}
+
+	if parsedInfo.Action != "test_action" {
+		t.Errorf("Action = %q, want %q", parsedInfo.Action, "test_action")
+	}
+	if parsedInfo.Delay != 5 {
+		t.Errorf("Delay = %d, want 5", parsedInfo.Delay)
+	}
+	if parsedInfo.Message != "test message" {
+		t.Errorf("Message = %q, want %q", parsedInfo.Message, "test message")
+	}
+	if parsedInfo.PID != os.Getpid() {
+		t.Errorf("PID = %d, want %d", parsedInfo.PID, os.Getpid())
+	}
+	if parsedInfo.CreatedAt.IsZero() {
+		t.Error("CreatedAt was not set")
+	}
 }
