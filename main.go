@@ -91,6 +91,10 @@ const (
 	pidFileName = "sysreboot.pid"
 )
 
+// pidFileDirOverride allows PID-file I/O to be isolated in tests.
+// Production code leaves this empty and uses the normal platform path.
+var pidFileDirOverride string
+
 // ScheduleInfo holds information about a scheduled action
 type ScheduleInfo struct {
 	PID           int       `json:"pid"`
@@ -351,6 +355,10 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
+	if pidFileDirOverride != "" {
+		return filepath.Join(pidFileDirOverride, pidFileName)
+	}
+
 	// Try primary location first
 	if runtime.GOOS != "windows" {
 		if _, err := os.Stat(pidFileDir); err == nil {
