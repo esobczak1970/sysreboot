@@ -18,8 +18,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+)
+
+var (
+	cachedPIDFilePath string
+	pidFilePathOnce   sync.Once
 )
 
 // Constants for application metadata
@@ -341,21 +347,25 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
-	// Try primary location first
-	if runtime.GOOS != "windows" {
-		if _, err := os.Stat(pidFileDir); err == nil {
-			return filepath.Join(pidFileDir, pidFileName)
+	pidFilePathOnce.Do(func() {
+		// Try primary location first
+		if runtime.GOOS != "windows" {
+			if _, err := os.Stat(pidFileDir); err == nil {
+				cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
+				return
+			}
 		}
-	}
-	// Fallback to /tmp or TEMP directory
-	tempDir := pidFileDirAlt
-	if runtime.GOOS == "windows" {
-		tempDir = os.Getenv("TEMP")
-		if tempDir == "" {
-			tempDir = os.TempDir()
+		// Fallback to /tmp or TEMP directory
+		tempDir := pidFileDirAlt
+		if runtime.GOOS == "windows" {
+			tempDir = os.Getenv("TEMP")
+			if tempDir == "" {
+				tempDir = os.TempDir()
+			}
 		}
-	}
-	return filepath.Join(tempDir, pidFileName)
+		cachedPIDFilePath = filepath.Join(tempDir, pidFileName)
+	})
+	return cachedPIDFilePath
 }
 
 // writePIDFile writes the current process PID and schedule info to a file
