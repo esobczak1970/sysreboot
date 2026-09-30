@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -93,7 +94,11 @@ const (
 
 // pidFileDirOverride allows PID-file I/O to be isolated in tests.
 // Production code leaves this empty and uses the normal platform path.
-var pidFileDirOverride string
+var (
+	pidFileDirOverride string
+	cachedPIDFilePath  string
+	pidFilePathOnce    sync.Once
+)
 
 // ScheduleInfo holds information about a scheduled action
 type ScheduleInfo struct {
@@ -355,18 +360,25 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
+	// Tests can override the path without affecting the cached production path.
 	if pidFileDirOverride != "" {
 		return filepath.Join(pidFileDirOverride, pidFileName)
 	}
 
-	// Try primary location first
-	if runtime.GOOS != "windows" {
-		if _, err := os.Stat(pidFileDir); err == nil {
-			return filepath.Join(pidFileDir, pidFileName)
+	pidFilePathOnce.Do(func() {
+		// Try primary location first.
+		if runtime.GOOS != "windows" {
+			if _, err := os.Stat(pidFileDir); err == nil {
+				cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
+				return
+			}
 		}
-	}
-	// Fallback to temp directory
-	return filepath.Join(os.TempDir(), pidFileName)
+
+		// Fall back to the platform temporary directory.
+		cachedPIDFilePath = filepath.Join(os.TempDir(), pidFileName)
+	})
+
+	return cachedPIDFilePath
 }
 
 // writePIDFile writes the current process PID and schedule info to a file
