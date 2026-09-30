@@ -127,7 +127,7 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		{
 			name:         "Valid future time",
 			timeStr:      time.Now().Add(2 * time.Second).Format("15:04"),
-			action:       "reboot",
+			action:       ActionReboot,
 			message:      "test message",
 			confirmation: false,
 			expectError:  false,
@@ -135,7 +135,7 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		{
 			name:          "Invalid time format",
 			timeStr:       "25:99",
-			action:        "reboot",
+			action:        ActionReboot,
 			message:       "",
 			confirmation:  false,
 			expectError:   true,
@@ -144,7 +144,7 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		{
 			name:          "Invalid time string",
 			timeStr:       "not-a-time",
-			action:        "reboot",
+			action:        ActionReboot,
 			message:       "",
 			confirmation:  false,
 			expectError:   true,
@@ -341,7 +341,7 @@ func TestExecuteSystemCommand(t *testing.T) {
 		},
 		{
 			name:        "Reboot (will fail without privileges)",
-			action:      "reboot",
+			action:      ActionReboot,
 			expectError: true,
 			skipOnCI:    true,
 		},
@@ -371,7 +371,7 @@ func TestExecuteSystemCommandUnsupportedOS(t *testing.T) {
 
 	// Test will naturally fail on systems without proper privileges
 	// which is expected behavior
-	err := executeSystemCommand("reboot")
+	err := executeSystemCommand(ActionReboot)
 	if err == nil && os.Geteuid() != 0 {
 		t.Error("executeSystemCommand() should fail without root privileges")
 	}
@@ -513,14 +513,14 @@ func TestExecuteAction(t *testing.T) {
 	}{
 		{
 			name:         "Execute without confirmation",
-			action:       "reboot",
+			action:       ActionReboot,
 			message:      "",
 			confirmation: false,
 			skipTest:     true, // Skip actual execution
 		},
 		{
 			name:         "Execute with message",
-			action:       "reboot",
+			action:       ActionReboot,
 			message:      "System rebooting",
 			confirmation: false,
 			skipTest:     true,
@@ -576,7 +576,7 @@ func TestExecuteActionCancelled(t *testing.T) {
 		_ = w.Close()
 	}()
 
-	executeAction("reboot", "", true)
+	executeAction(ActionReboot, "", true)
 
 	_ = wOut.Close()
 	os.Stdin = oldStdin
@@ -604,7 +604,7 @@ func TestHandleScheduledTime(t *testing.T) {
 		{
 			name:    "Invalid time",
 			timeStr: "invalid",
-			action:  "reboot",
+			action:  ActionReboot,
 			wantErr: true,
 		},
 	}
@@ -644,12 +644,12 @@ func TestHandleDelay(t *testing.T) {
 		{
 			name:   "No delay",
 			delay:  0,
-			action: "reboot",
+			action: ActionReboot,
 		},
 		{
 			name:   "With delay (short for testing)",
 			delay:  0,
-			action: "reboot",
+			action: ActionReboot,
 		},
 	}
 
@@ -731,7 +731,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 			setFlags: map[int]bool{
 				rebootIndex: true,
 			},
-			expectAction: "reboot",
+			expectAction: ActionReboot,
 			expectError:  false,
 		},
 		{
@@ -740,7 +740,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 				haltIndex:   true,
 				rebootIndex: false, // Need to turn off default
 			},
-			expectAction: "halt",
+			expectAction: ActionHalt,
 			expectError:  false,
 		},
 		{
@@ -749,7 +749,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 				poweroffIndex: true,
 				rebootIndex:   false, // Need to turn off default
 			},
-			expectAction: "poweroff",
+			expectAction: ActionPoweroff,
 			expectError:  false,
 		},
 		{
@@ -758,7 +758,7 @@ func TestMain_ConflictingFlags(t *testing.T) {
 				shutdownIndex: true,
 				rebootIndex:   false, // Need to turn off default
 			},
-			expectAction: "poweroff",
+			expectAction: ActionPoweroff,
 			expectError:  false,
 		},
 		{
@@ -788,19 +788,19 @@ func TestMain_ConflictingFlags(t *testing.T) {
 				*appFlags[idx].value.(*bool) = val
 			}
 
-			action := "reboot"
+			action := ActionReboot
 			conflictingFlags := 0
 
 			if *appFlags[haltIndex].value.(*bool) {
-				action = "halt"
+				action = ActionHalt
 				conflictingFlags++
 			}
 			if *appFlags[poweroffIndex].value.(*bool) {
-				action = "poweroff"
+				action = ActionPoweroff
 				conflictingFlags++
 			}
 			if *appFlags[shutdownIndex].value.(*bool) {
-				action = "poweroff"
+				action = ActionPoweroff
 				conflictingFlags++
 			}
 			if *appFlags[rebootIndex].value.(*bool) && conflictingFlags > 0 {
@@ -827,10 +827,10 @@ func TestAppFlagsIndexOrder(t *testing.T) {
 		"confirm",
 		"confirm-timeout",
 		"delay",
-		"halt",
+		ActionHalt,
 		"message",
-		"poweroff",
-		"reboot",
+		ActionPoweroff,
+		ActionReboot,
 		"shutdown",
 		"status",
 		"time",
@@ -848,7 +848,7 @@ func TestAppFlagsIndexOrder(t *testing.T) {
 	if appFlags[confirmIndex].longName != "confirm" {
 		t.Error("confirmIndex does not match appFlags order")
 	}
-	if appFlags[rebootIndex].longName != "reboot" {
+	if appFlags[rebootIndex].longName != ActionReboot {
 		t.Error("rebootIndex does not match appFlags order")
 	}
 	if appFlags[verboseIndex].longName != "verbose" {
@@ -881,7 +881,7 @@ func TestExecuteSystemCommandWindows(t *testing.T) {
 	setupTestLogger()
 
 	// Test that shutdown command format is correct (will fail without admin rights)
-	err := executeSystemCommand("reboot")
+	err := executeSystemCommand(ActionReboot)
 	if err != nil {
 		// Expected to fail without admin rights
 		t.Logf("executeSystemCommand failed as expected without privileges: %v", err)
@@ -900,7 +900,7 @@ func TestExecuteSystemCommandDarwin(t *testing.T) {
 	}
 
 	// Test privilege check
-	err := executeSystemCommand("reboot")
+	err := executeSystemCommand(ActionReboot)
 	if err == nil {
 		t.Error("executeSystemCommand should fail without root on macOS")
 	} else if !strings.Contains(err.Error(), "root privileges required") {
@@ -916,7 +916,7 @@ func TestExecuteSystemCommandLinux(t *testing.T) {
 	setupTestLogger()
 
 	// Test that systemctl command is used (will fail without privileges)
-	err := executeSystemCommand("reboot")
+	err := executeSystemCommand(ActionReboot)
 	if err != nil {
 		t.Logf("executeSystemCommand failed as expected: %v", err)
 	}
@@ -935,7 +935,7 @@ func TestScheduleAtSpecificTimePastTime(t *testing.T) {
 
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- scheduleAtSpecificTime(pastTime, "reboot", "", false)
+		errChan <- scheduleAtSpecificTime(pastTime, ActionReboot, "", false)
 	}()
 
 	select {
@@ -951,7 +951,7 @@ func TestScheduleAtSpecificTimePastTime(t *testing.T) {
 
 func TestInit(t *testing.T) {
 	// Test that init properly configured flags
-	testFlag := flag.Lookup("reboot")
+	testFlag := flag.Lookup(ActionReboot)
 	if testFlag == nil {
 		t.Error("init() did not register --reboot flag")
 	}
@@ -1035,7 +1035,7 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 		// This will schedule but not complete due to context timeout
 		*appFlags[messageIndex].value.(*string) = "test"
 		*appFlags[confirmIndex].value.(*bool) = false
-		handleScheduledTime(futureTime, "reboot")
+		handleScheduledTime(futureTime, ActionReboot)
 		done <- true
 	}()
 
@@ -1101,7 +1101,7 @@ func TestExecuteActionWithMessage(t *testing.T) {
 func TestExecuteSystemCommandAllActions(t *testing.T) {
 	setupTestLogger()
 
-	actions := []string{"reboot", "poweroff", "halt"}
+	actions := []string{ActionReboot, ActionPoweroff, ActionHalt}
 
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {
@@ -1162,7 +1162,7 @@ func TestGetLogFileDirectoryWindowsFallback(t *testing.T) {
 
 // TestInitFlagSetup verifies init properly configured all flags
 func TestInitFlagSetup(t *testing.T) {
-	flagNames := []string{"confirm", "reboot", "halt", "poweroff", "shutdown", "delay", "time", "message", "verbose", "version", "confirm-timeout"}
+	flagNames := []string{"confirm", ActionReboot, ActionHalt, ActionPoweroff, "shutdown", "delay", "time", "message", "verbose", "version", "confirm-timeout"}
 	shortFlags := []string{"c", "r", "h", "p", "s", "d", "t", "m", "vb", "v", "ct"}
 
 	for _, name := range flagNames {
@@ -1184,7 +1184,7 @@ func TestExecuteSystemCommandContextTimeout(t *testing.T) {
 
 	// This tests that the context timeout logic is in place
 	// Actual timeout would take 30 seconds, so we just verify the code paths
-	err := executeSystemCommand("reboot")
+	err := executeSystemCommand(ActionReboot)
 
 	// Should fail due to lack of privileges, not timeout
 	if err != nil {
@@ -1202,7 +1202,7 @@ func TestExecuteSystemCommandMacOSActions(t *testing.T) {
 
 	setupTestLogger()
 
-	actions := []string{"reboot", "poweroff", "halt"}
+	actions := []string{ActionReboot, ActionPoweroff, ActionHalt}
 
 	for _, action := range actions {
 		t.Run(action, func(t *testing.T) {
@@ -1230,9 +1230,9 @@ func TestExecuteSystemCommandWindowsActions(t *testing.T) {
 	tests := []struct {
 		action string
 	}{
-		{"reboot"},
-		{"poweroff"},
-		{"halt"},
+		{ActionReboot},
+		{ActionPoweroff},
+		{ActionHalt},
 	}
 
 	for _, tt := range tests {
@@ -1382,7 +1382,7 @@ func TestExecuteSystemCommandLinuxHalt(t *testing.T) {
 
 	setupTestLogger()
 
-	err := executeSystemCommand("halt")
+	err := executeSystemCommand(ActionHalt)
 	// Expected to fail without privileges
 	if err != nil {
 		t.Logf("executeSystemCommand(halt) failed as expected: %v", err)
@@ -1397,7 +1397,7 @@ func TestExecuteSystemCommandWindowsHalt(t *testing.T) {
 
 	setupTestLogger()
 
-	err := executeSystemCommand("halt")
+	err := executeSystemCommand(ActionHalt)
 	// Should work (use shutdown command) but fail without admin
 	if err != nil {
 		t.Logf("executeSystemCommand(halt) failed as expected without admin: %v", err)
@@ -1418,14 +1418,14 @@ func TestExecuteActionFullFlow(t *testing.T) {
 	}{
 		{
 			name:         "Reboot with message and verbose",
-			action:       "reboot",
+			action:       ActionReboot,
 			message:      "Test reboot message",
 			confirmation: false,
 			verbose:      true,
 		},
 		{
 			name:         "Poweroff without message",
-			action:       "poweroff",
+			action:       ActionPoweroff,
 			message:      "",
 			confirmation: false,
 			verbose:      false,
@@ -1462,7 +1462,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 	// Test with invalid time - should log error
 	buf := setupTestLogger()
 
-	err := scheduleAtSpecificTime("99:99", "reboot", "", false)
+	err := scheduleAtSpecificTime("99:99", ActionReboot, "", false)
 	if err == nil {
 		t.Error("scheduleAtSpecificTime should return error for invalid time")
 	}
@@ -1480,7 +1480,7 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	switch runtime.GOOS {
 	case "linux":
 		// Test all systemctl actions
-		for _, action := range []string{"reboot", "poweroff", "halt"} {
+		for _, action := range []string{ActionReboot, ActionPoweroff, ActionHalt} {
 			err := executeSystemCommand(action)
 			if err != nil {
 				t.Logf("Linux: executeSystemCommand(%s) = %v", action, err)
@@ -1488,7 +1488,7 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 		}
 	case "windows":
 		// Test all Windows shutdown actions
-		for _, action := range []string{"reboot", "poweroff", "halt"} {
+		for _, action := range []string{ActionReboot, ActionPoweroff, ActionHalt} {
 			err := executeSystemCommand(action)
 			if err != nil {
 				t.Logf("Windows: executeSystemCommand(%s) = %v", action, err)
@@ -1497,7 +1497,7 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	case "darwin":
 		// Test all macOS actions
 		if os.Geteuid() != 0 {
-			for _, action := range []string{"reboot", "poweroff", "halt"} {
+			for _, action := range []string{ActionReboot, ActionPoweroff, ActionHalt} {
 				err := executeSystemCommand(action)
 				if err == nil {
 					t.Errorf("macOS: executeSystemCommand(%s) should fail without root", action)
