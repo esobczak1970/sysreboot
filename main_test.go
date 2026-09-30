@@ -1707,3 +1707,29 @@ func TestWritePIDFile(t *testing.T) {
 		t.Error("CreatedAt was not set")
 	}
 }
+
+func TestRemovePIDFile(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	path := getPIDFilePath()
+
+	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
+		t.Fatalf("failed to create test PID file: %v", err)
+	}
+
+	if err := removePIDFile(); err != nil {
+		t.Fatalf("removePIDFile() returned unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("PID file %s still exists after removePIDFile(); stat error = %v", path, err)
+	}
+
+	if err := removePIDFile(); err != nil {
+		t.Errorf("removePIDFile() returned error for non-existent file: %v", err)
+	}
+}
