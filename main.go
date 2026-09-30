@@ -117,6 +117,13 @@ func init() {
 		}
 	}
 
+	initLogger()
+
+	// Override the default flag usage message with a custom one.
+	flag.Usage = customUsage
+}
+
+func initLogger() {
 	// Set up the log file location and initialize the logger.
 	logFile = filepath.Join(getLogFileDirectory(), appName+".log")
 	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -125,9 +132,6 @@ func init() {
 	}
 	logWriter = file
 	logger = log.New(file, appName+": ", log.Ldate|log.Ltime|log.Lshortfile)
-
-	// Override the default flag usage message with a custom one.
-	flag.Usage = customUsage
 }
 
 func getLogFileDirectory() string {
