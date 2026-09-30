@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -1585,5 +1586,63 @@ func TestCancelScheduledAction(t *testing.T) {
 		t.Error("cancelScheduledAction should return error when no schedule exists")
 	} else if !strings.Contains(err.Error(), "no scheduled action found") {
 		t.Errorf("cancelScheduledAction expected error containing 'no scheduled action found', got: %v", err)
+	}
+}
+
+func TestWritePIDFile(t *testing.T) {
+	setupTestLogger()
+
+	// Ensure temp directory is cleanly overridden for cross-platform isolation
+	originalTempDirOverride := tempDirOverride
+	tempDirOverride = t.TempDir()
+	defer func() { tempDirOverride = originalTempDirOverride }()
+
+	// Ensure clean state
+	_ = removePIDFile()
+	defer removePIDFile()
+
+	info := ScheduleInfo{
+		Action:  "test_action",
+		Delay:   5,
+		Message: "test message",
+	}
+
+	err := writePIDFile(info)
+	if err != nil {
+		t.Fatalf("writePIDFile returned unexpected error: %v", err)
+	}
+
+	pidPath := getPIDFilePath()
+
+	// Verify file exists
+	if _, err := os.Stat(pidPath); os.IsNotExist(err) {
+		t.Fatalf("PID file was not created at expected path: %s", pidPath)
+	}
+
+	// Read and verify contents
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("Failed to read created PID file: %v", err)
+	}
+
+	var parsedInfo ScheduleInfo
+	if err := json.Unmarshal(data, &parsedInfo); err != nil {
+		t.Fatalf("Failed to parse PID file JSON: %v", err)
+	}
+
+	if parsedInfo.Action != "test_action" {
+		t.Errorf("Expected Action 'test_action', got '%s'", parsedInfo.Action)
+	}
+	if parsedInfo.Delay != 5 {
+		t.Errorf("Expected Delay 5, got %d", parsedInfo.Delay)
+	}
+	if parsedInfo.Message != "test message" {
+		t.Errorf("Expected Message 'test message', got '%s'", parsedInfo.Message)
+	}
+	if parsedInfo.PID != os.Getpid() {
+		t.Errorf("Expected PID %d, got %d", os.Getpid(), parsedInfo.PID)
+	}
+	if parsedInfo.CreatedAt.IsZero() {
+		t.Error("Expected CreatedAt to be set, but it was zero")
 	}
 }

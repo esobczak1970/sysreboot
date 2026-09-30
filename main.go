@@ -78,11 +78,14 @@ var (
 	logWriter io.WriteCloser
 )
 
-// Constants for PID file management
-const (
+// Variables for PID file management (var instead of const for testing)
+var (
 	pidFileDir    = "/var/run" // Primary location for PID files (Unix)
 	pidFileDirAlt = "/tmp"     // Fallback location for PID files
 	pidFileName   = "sysreboot.pid"
+
+	// tempDirOverride is used to override the temp directory in tests, specifically for Windows
+	tempDirOverride = ""
 )
 
 // ScheduleInfo holds information about a scheduled action
@@ -341,6 +344,10 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
+	if tempDirOverride != "" {
+		return filepath.Join(tempDirOverride, pidFileName)
+	}
+
 	// Try primary location first
 	if runtime.GOOS != "windows" {
 		if _, err := os.Stat(pidFileDir); err == nil {
