@@ -28,6 +28,13 @@ const (
 	appVersion = "0.2.0"
 )
 
+// Action constants for valid system operations
+const (
+	ActionReboot   = "reboot"
+	ActionPoweroff = "poweroff"
+	ActionHalt     = "halt"
+)
+
 // Enumeration for index mapping of the flags (must match appFlags order)
 const (
 	cancelIndex = iota
@@ -78,15 +85,15 @@ var (
 	logWriter io.WriteCloser
 )
 
-// Variables for PID file management (var instead of const for testing)
-var (
-	pidFileDir    = "/var/run" // Primary location for PID files (Unix)
-	pidFileDirAlt = "/tmp"     // Fallback location for PID files
-	pidFileName   = "sysreboot.pid"
-
-	// tempDirOverride is used to override the temp directory in tests, specifically for Windows
-	tempDirOverride = ""
+// Constants for PID file management
+const (
+	pidFileDir  = "/var/run" // Primary location for PID files (Unix)
+	pidFileName = "sysreboot.pid"
 )
+
+// pidFileDirOverride allows PID-file I/O to be isolated in tests.
+// Production code leaves this empty and uses the normal platform path.
+var pidFileDirOverride string
 
 // ScheduleInfo holds information about a scheduled action
 type ScheduleInfo struct {
@@ -114,6 +121,13 @@ func init() {
 		}
 	}
 
+	initLogger()
+
+	// Override the default flag usage message with a custom one.
+	flag.Usage = customUsage
+}
+
+func initLogger() {
 	// Set up the log file location and initialize the logger.
 	logFile = filepath.Join(getLogFileDirectory(), appName+".log")
 	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
@@ -122,9 +136,6 @@ func init() {
 	}
 	logWriter = file
 	logger = log.New(file, appName+": ", log.Ldate|log.Ltime|log.Lshortfile)
-
-	// Override the default flag usage message with a custom one.
-	flag.Usage = customUsage
 }
 
 func getLogFileDirectory() string {
@@ -288,9 +299,9 @@ func executeSystemCommand(action string) error {
 		cmd = exec.Command("systemctl", action)
 	case "windows":
 		switch action {
-		case "reboot":
+		case ActionReboot:
 			cmd = exec.Command("shutdown", "/r", "/t", "0")
-		case "poweroff", "halt":
+		case ActionPoweroff, ActionHalt:
 			cmd = exec.Command("shutdown", "/s", "/t", "0")
 		default:
 			return fmt.Errorf("unsupported action for Windows: %s", action)
@@ -302,11 +313,11 @@ func executeSystemCommand(action string) error {
 		}
 
 		switch action {
-		case "reboot":
+		case ActionReboot:
 			cmd = exec.Command("shutdown", "-r", "now")
-		case "poweroff":
+		case ActionPoweroff:
 			cmd = exec.Command("shutdown", "-h", "now")
-		case "halt":
+		case ActionHalt:
 			cmd = exec.Command("halt")
 		default:
 			return fmt.Errorf("unsupported action for macOS: %s", action)
@@ -344,8 +355,8 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
-	if tempDirOverride != "" {
-		return filepath.Join(tempDirOverride, pidFileName)
+	if pidFileDirOverride != "" {
+		return filepath.Join(pidFileDirOverride, pidFileName)
 	}
 
 	// Try primary location first
@@ -354,15 +365,8 @@ func getPIDFilePath() string {
 			return filepath.Join(pidFileDir, pidFileName)
 		}
 	}
-	// Fallback to /tmp or TEMP directory
-	tempDir := pidFileDirAlt
-	if runtime.GOOS == "windows" {
-		tempDir = os.Getenv("TEMP")
-		if tempDir == "" {
-			tempDir = os.TempDir()
-		}
-	}
-	return filepath.Join(tempDir, pidFileName)
+	// Fallback to temp directory
+	return filepath.Join(os.TempDir(), pidFileName)
 }
 
 // writePIDFile writes the current process PID and schedule info to a file
@@ -376,7 +380,17 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 		return fmt.Errorf("failed to marshal schedule info: %v", err)
 	}
 
-	if err := os.WriteFile(pidPath, data, 0644); err != nil {
+	// Remove any existing stale PID file or symlink
+	_ = os.Remove(pidPath)
+
+	// Create a new PID file securely
+	f, err := os.OpenFile(pidPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to create PID file: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("failed to write PID file: %v", err)
 	}
 
@@ -552,19 +566,19 @@ func main() {
 	}
 
 	// Determine the action to take based on flags provided by the user.
-	action := "reboot" // Default action is to reboot.
+	action := ActionReboot // Default action is to reboot.
 	conflictingFlags := 0
 
 	if *(appFlags[haltIndex].value.(*bool)) {
-		action = "halt"
+		action = ActionHalt
 		conflictingFlags++
 	}
 	if *(appFlags[poweroffIndex].value.(*bool)) {
-		action = "poweroff"
+		action = ActionPoweroff
 		conflictingFlags++
 	}
 	if *(appFlags[shutdownIndex].value.(*bool)) {
-		action = "poweroff"
+		action = ActionPoweroff
 		conflictingFlags++
 	}
 	if *(appFlags[rebootIndex].value.(*bool)) && conflictingFlags > 0 {
