@@ -22,15 +22,36 @@ readonly DEFAULT_GO_VERSION="1.27.1"
 readonly GO_VERSION="${GO_VERSION:-${DEFAULT_GO_VERSION}}"
 readonly GO_TOOLCHAIN="go${GO_VERSION}+auto"
 
-SCRIPT_DIR="$(
-    cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1
-    pwd -P
-)"
+# Resolve the repository root robustly.
+#
+# Some coding-agent environments execute this script's contents through
+# "bash -c" or source it from stdin. In those cases BASH_SOURCE may be unset,
+# so the Git worktree is the authoritative location.
+if command -v git >/dev/null 2>&1; then
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+else
+    REPO_ROOT=""
+fi
 
-REPO_ROOT="$(
-    cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1
-    pwd -P
-)"
+if [[ -z "${REPO_ROOT}" ]]; then
+    if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+        SCRIPT_DIR="$(
+            cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1
+            pwd -P
+        )"
+        REPO_ROOT="$(
+            cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1
+            pwd -P
+        )"
+    else
+        REPO_ROOT="$(pwd -P)"
+    fi
+fi
+
+[[ -n "${REPO_ROOT}" ]] || {
+    printf '[setup] ERROR: Unable to determine repository root.\n' >&2
+    exit 1
+}
 
 log() {
     printf '[setup] %s\n' "$*"
