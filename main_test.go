@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"runtime"
 	"strings"
 	"testing"
@@ -155,18 +157,15 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if !tt.expectError {
-				testCancelChan = make(chan struct{})
-				defer func() {
-					testCancelChan = nil
-				}()
+				ctx, cancel := context.WithCancel(context.Background())
 
 				errChan := make(chan error, 1)
 				go func() {
-					errChan <- scheduleAtSpecificTime(tt.timeStr, tt.action, tt.message, tt.confirmation)
+					errChan <- scheduleAtSpecificTime(ctx, tt.timeStr, tt.action, tt.message, tt.confirmation)
 				}()
 
 				// Cancel the test immediately to unblock scheduleAtSpecificTime
-				close(testCancelChan)
+				cancel()
 
 				// Wait for goroutine to return so we don't leak it
 				err := <-errChan
@@ -174,7 +173,7 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 					t.Errorf("scheduleAtSpecificTime() unexpected error = %v", err)
 				}
 			} else {
-				err := scheduleAtSpecificTime(tt.timeStr, tt.action, tt.message, tt.confirmation)
+				err := scheduleAtSpecificTime(context.Background(), tt.timeStr, tt.action, tt.message, tt.confirmation)
 				if err == nil {
 					t.Error("scheduleAtSpecificTime() expected error, got nil")
 				} else if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
@@ -622,7 +621,7 @@ func TestHandleScheduledTime(t *testing.T) {
 			os.Stderr = w
 
 			// Test the error handling without actually exiting
-			err := scheduleAtSpecificTime(tt.timeStr, tt.action, "", false)
+			err := scheduleAtSpecificTime(context.Background(), tt.timeStr, tt.action, "", false)
 
 			_ = w.Close()
 			os.Stderr = oldStderr
@@ -664,7 +663,7 @@ func TestHandleDelay(t *testing.T) {
 			t.Skip("Skipping actual system command execution")
 
 			*appFlags[delayIndex].value.(*int) = tt.delay
-			handleDelay(tt.delay, tt.action)
+			handleDelay(context.Background(), tt.delay, tt.action)
 		})
 	}
 }
@@ -934,18 +933,16 @@ func TestScheduleAtSpecificTimePastTime(t *testing.T) {
 	// Use a time in the past (should schedule for tomorrow)
 	pastTime := time.Now().Add(-1 * time.Hour).Format("15:04")
 
-	testCancelChan = make(chan struct{})
-	defer func() {
-		testCancelChan = nil
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- scheduleAtSpecificTime(pastTime, ActionReboot, "", false)
+		errChan <- scheduleAtSpecificTime(ctx, pastTime, ActionReboot, "", false)
 	}()
 
 	// Signal cleanup and wait to avoid leaking the goroutine
-	close(testCancelChan)
+	cancel()
 	err := <-errChan
 	if err != nil {
 		t.Errorf("scheduleAtSpecificTime() with past time error = %v", err)
@@ -1030,22 +1027,20 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 	// Test with a very short future time
 	futureTime := time.Now().Add(2 * time.Second).Format("15:04")
 
-	testCancelChan = make(chan struct{})
-	defer func() {
-		testCancelChan = nil
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	done := make(chan bool)
 	go func() {
 		// This will schedule but not complete
 		*appFlags[messageIndex].value.(*string) = "test"
 		*appFlags[confirmIndex].value.(*bool) = false
-		handleScheduledTime(futureTime, ActionReboot)
+		handleScheduledTime(ctx, futureTime, ActionReboot)
 		done <- true
 	}()
 
 	// Signal cleanup and wait to avoid leaking the goroutine
-	close(testCancelChan)
+	cancel()
 	<-done
 	t.Log("handleScheduledTime scheduled and cancelled successfully")
 }
@@ -1293,6 +1288,45 @@ func TestHandleDelayWithDelay(t *testing.T) {
 	t.Log("handleDelay logic tested (skipping actual execution)")
 }
 
+func TestHandleDelay_WithCancellation(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	// Override PID file dir so we don't mess with real system state
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	*appFlags[messageIndex].value.(*string) = "test message"
+	*appFlags[confirmIndex].value.(*bool) = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errChan := make(chan struct{})
+
+	go func() {
+		// Delay > 0 will create PID file and block on timer
+		handleDelay(ctx, 5, ActionReboot)
+		close(errChan)
+	}()
+
+	// Ensure the handleDelay had time to start and write PID file
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel
+	cancel()
+
+	// Wait for goroutine to return
+	<-errChan
+
+	// Verify PID file was removed on defer
+	pidPath := getPIDFilePath()
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("PID file %s still exists after cancellation; stat error = %v", pidPath, err)
+	}
+}
+
 // TestGetLogFileDirectoryAllPaths tests all code paths in getLogFileDirectory
 func TestGetLogFileDirectoryAllPaths(t *testing.T) {
 	// Save original values
@@ -1463,7 +1497,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 	// Test with invalid time - should log error
 	buf := setupTestLogger()
 
-	err := scheduleAtSpecificTime("99:99", ActionReboot, "", false)
+	err := scheduleAtSpecificTime(context.Background(), "99:99", ActionReboot, "", false)
 	if err == nil {
 		t.Error("scheduleAtSpecificTime should return error for invalid time")
 	}
@@ -1577,6 +1611,60 @@ func TestShowScheduleStatus(t *testing.T) {
 	}
 }
 
+func TestShowScheduleStatus_ActiveAction(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	// Write a valid PID file for current process so processExists returns true
+	info := ScheduleInfo{
+		Action:        ActionReboot,
+		Delay:         10,
+		Message:       "test action",
+		ScheduledTime: "22:00",
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	err := showScheduleStatus()
+
+	_ = wOut.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Errorf("showScheduleStatus returned error: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, rOut)
+	output := buf.String()
+
+	expectedStrings := []string{
+		"Scheduled Action Status:",
+		"Action:       reboot",
+		fmt.Sprintf("PID:          %d", os.Getpid()),
+		"Scheduled At: 22:00",
+		"Delay:        10 minutes",
+		"Message:      test action",
+		"Created:      ",
+	}
+
+	for _, expected := range expectedStrings {
+		if !strings.Contains(output, expected) {
+			t.Errorf("showScheduleStatus output missing expected string: %q\nOutput: %s", expected, output)
+		}
+	}
+}
+
 func TestCancelScheduledAction(t *testing.T) {
 	setupTestLogger()
 
@@ -1586,6 +1674,56 @@ func TestCancelScheduledAction(t *testing.T) {
 		t.Error("cancelScheduledAction should return error when no schedule exists")
 	} else if !strings.Contains(err.Error(), "no scheduled action found") {
 		t.Errorf("cancelScheduledAction expected error containing 'no scheduled action found', got: %v", err)
+	}
+}
+
+func TestCancelScheduledAction_ActiveAction(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	// Write a valid PID file for current process
+	info := ScheduleInfo{
+		Action: ActionReboot,
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	// Ignore SIGINT so cancelScheduledAction doesn't kill the test process
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	defer signal.Stop(c)
+
+	// Capture stdout
+	oldStdout := os.Stdout
+	rOut, wOut, _ := os.Pipe()
+	os.Stdout = wOut
+
+	err := cancelScheduledAction()
+
+	_ = wOut.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Errorf("cancelScheduledAction returned error: %v", err)
+	}
+
+	// Verify PID file is gone
+	pidPath := getPIDFilePath()
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("PID file %s still exists after cancellation; stat error = %v", pidPath, err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, rOut)
+	output := buf.String()
+
+	if !strings.Contains(output, "Cancelled scheduled reboot action") {
+		t.Errorf("cancelScheduledAction output missing expected message, got: %s", output)
 	}
 }
 
