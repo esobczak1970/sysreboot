@@ -10,6 +10,8 @@ APP_NAME := sysreboot
 ENTRY := .
 GO ?= go
 GO_VERSION ?= $(shell tr -d '[:space:]' < .go-version)
+GO_TOOLCHAIN ?= go$(GO_VERSION)
+GO_RUN = GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 BIN_DIR ?= $(CURDIR)/bin
 COVERAGE_FILE ?= coverage.out
 # golangci-lint v2 supports Go 1.27. Never downgrade to v1 as a workaround;
@@ -26,7 +28,7 @@ PKGS ?= ./...
 help:
 	@printf '%s\n' \
 	  'sysreboot Make targets:' \
-	  '  make doctor       - Verify the local Go development toolchain.' \
+	  '  make doctor       - Select and verify the repository Go development toolchain.' \
 	  '  make deps         - Download module dependencies.' \
 	  '  make format       - Apply gofmt simplifications to Go source.' \
 	  '  make format-check - Fail when Go source is not gofmt clean.' \
@@ -44,33 +46,35 @@ help:
 all: build
 
 doctor:
-	@command -v "$(GO)" >/dev/null || { echo "Go is required but was not found in PATH." >&2; exit 1; }
-	@$(GO) version
-	@actual="$$(GOTOOLCHAIN=local $(GO) env GOVERSION)"; expected="go$(GO_VERSION)"; \
-	if [[ "$$actual" != "$$expected" ]]; then echo "Go toolchain mismatch: expected $$expected from .go-version, got $$actual." >&2; exit 1; fi
-	@$(GO) env GOMOD
+	@command -v "$(GO)" >/dev/null || { echo "A bootstrap Go installation is required but was not found in PATH." >&2; exit 1; }
+	@actual="$(GOTOOLCHAIN="$(GO_TOOLCHAIN)" "$(GO)" env GOVERSION)"; expected="go$(GO_VERSION)"; \
+	if [[ "$actual" != "$expected" ]]; then echo "Go toolchain mismatch: expected $expected from .go-version, got $actual." >&2; exit 1; fi
+	@$(GO_RUN) version
+	@$(GO_RUN) env GOMOD
 
 deps: doctor
-	$(GO) mod download
+	$(GO_RUN) mod download
 
 tidy: doctor
-	$(GO) mod tidy
+	$(GO_RUN) mod tidy
 
 update: doctor
-	$(GO) get -u ./...
-	$(GO) mod tidy
+	$(GO_RUN) get -u ./...
+	$(GO_RUN) mod tidy
 
 format: doctor
-	@files="$$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './bin/*')"; \
-	if [[ -n "$$files" ]]; then gofmt -s -w $$files; fi
+	@gofmt_bin="$(GOTOOLCHAIN="$(GO_TOOLCHAIN)" "$(GO)" env GOROOT)/bin/gofmt"; \
+	files="$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './bin/*')"; \
+	if [[ -n "$files" ]]; then "$gofmt_bin" -s -w $files; fi
 
 format-check: doctor
-	@files="$$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './bin/*')"; \
-	bad="$$(if [[ -n "$$files" ]]; then gofmt -s -l $$files; fi)"; \
-	if [[ -n "$$bad" ]]; then echo "The following Go files need formatting:"; echo "$$bad"; exit 1; fi
+	@gofmt_bin="$(GOTOOLCHAIN="$(GO_TOOLCHAIN)" "$(GO)" env GOROOT)/bin/gofmt"; \
+	files="$(find . -type f -name '*.go' -not -path './vendor/*' -not -path './bin/*')"; \
+	bad="$(if [[ -n "$files" ]]; then "$gofmt_bin" -s -l $files; fi)"; \
+	if [[ -n "$bad" ]]; then echo "The following Go files need formatting:"; echo "$bad"; exit 1; fi
 
 vet: deps
-	$(GO) vet $(PKGS)
+	$(GO_RUN) vet $(PKGS)
 
 golangci-lint-bin: doctor
 	@case "$(GOLANGCI_LINT_VERSION)" in \
@@ -78,35 +82,35 @@ golangci-lint-bin: doctor
 	  *) echo "GOLANGCI_LINT_VERSION must remain on v2.x; do not downgrade to v1." >&2; exit 1 ;; \
 	esac
 	@mkdir -p "$(BIN_DIR)"
-	@expected="$(GOLANGCI_LINT_VERSION)"; expected="$${expected#v}"; current_go="$$($(GO) env GOVERSION)"; rebuild=0; \
+	@expected="$(GOLANGCI_LINT_VERSION)"; expected="$${expected#v}"; current_go="$($(GO_RUN) env GOVERSION)"; rebuild=0; \
 	if [[ ! -x "$(GOLANGCI_LINT_BIN)" ]]; then rebuild=1; else \
 	  installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
-	  built_go="$$($(GO) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
+	  built_go="$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
 	  [[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || rebuild=1; fi; \
-	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(BIN_DIR)" $(GO) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
+	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(BIN_DIR)" $(GO_RUN) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
 	installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
-	built_go="$$($(GO) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
+	built_go="$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
 	[[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || { echo "golangci-lint verification failed: expected $$expected built with $$current_go, got $$installed built with $$built_go." >&2; exit 1; }
 
 lint: golangci-lint-bin
-	"$(GOLANGCI_LINT_BIN)" run --timeout="$(GOLANGCI_LINT_TIMEOUT)" $(PKGS)
+	GOTOOLCHAIN="$(GO_TOOLCHAIN)" "$(GOLANGCI_LINT_BIN)" run --timeout="$(GOLANGCI_LINT_TIMEOUT)" $(PKGS)
 
 test: deps
-	$(GO) test -count=1 $(GO_TEST_FLAGS) $(PKGS)
+	$(GO_RUN) test -count=1 $(GO_TEST_FLAGS) $(PKGS)
 
 test-race: deps
-	$(GO) test -race -count=1 $(GO_TEST_FLAGS) $(PKGS)
+	$(GO_RUN) test -race -count=1 $(GO_TEST_FLAGS) $(PKGS)
 
 coverage: deps
-	$(GO) test -count=1 -coverprofile="$(COVERAGE_FILE)" $(GO_TEST_FLAGS) $(PKGS)
-	$(GO) tool cover -func="$(COVERAGE_FILE)"
+	$(GO_RUN) test -count=1 -coverprofile="$(COVERAGE_FILE)" $(GO_TEST_FLAGS) $(PKGS)
+	$(GO_RUN) tool cover -func="$(COVERAGE_FILE)"
 
 build: deps
 	@mkdir -p "$(BIN_DIR)"
-	$(GO) build -trimpath -o "$(BIN_DIR)/$(APP_NAME)" $(ENTRY)
+	$(GO_RUN) build -trimpath -o "$(BIN_DIR)/$(APP_NAME)" $(ENTRY)
 
 run: deps
-	$(GO) run $(ENTRY) $(ARGS)
+	$(GO_RUN) run $(ENTRY) $(ARGS)
 
 check: format-check vet lint test build
 
