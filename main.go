@@ -98,7 +98,6 @@ var (
 	pidFileDirOverride string
 	cachedPIDFilePath  string
 	pidFilePathOnce    sync.Once
-	testCancelChan     chan struct{} // Used by tests to cleanly terminate scheduling wait loops
 )
 
 // ScheduleInfo holds information about a scheduled action
@@ -176,7 +175,7 @@ func customUsage() {
 	fmt.Fprintf(os.Stderr, "  %s --cancel                    # Cancel pending scheduled action\n", appName)
 }
 
-func scheduleAtSpecificTime(timeStr string, action string, message string, confirmation bool) error {
+func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, message string, confirmation bool) error {
 	// Schedule an action (reboot, shutdown, etc.) to occur at a specific time.
 	rebootTime, err := time.Parse("15:04", timeStr)
 	if err != nil {
@@ -212,8 +211,8 @@ func scheduleAtSpecificTime(timeStr string, action string, message string, confi
 		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
 		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
 		return nil
-	case <-testCancelChan:
-		// Test initiated cancellation
+	case <-ctx.Done():
+		// Context cancelled
 		timer.Stop()
 		return nil
 	}
@@ -608,17 +607,18 @@ func main() {
 	}
 
 	// Handle scheduled time if provided.
+	ctx := context.Background()
 	if *(appFlags[timeIndex].value.(*string)) != "" {
-		handleScheduledTime(*(appFlags[timeIndex].value.(*string)), action)
+		handleScheduledTime(ctx, *(appFlags[timeIndex].value.(*string)), action)
 		return
 	}
 
 	// Proceed with a delayed action if a delay is specified.
-	handleDelay(*(appFlags[delayIndex].value.(*int)), action)
+	handleDelay(ctx, *(appFlags[delayIndex].value.(*int)), action)
 }
 
 // handleScheduledTime schedules an action at a specific time.
-func handleScheduledTime(timeStr, action string) {
+func handleScheduledTime(ctx context.Context, timeStr, action string) {
 	message := *(appFlags[messageIndex].value.(*string))
 	confirmation := *(appFlags[confirmIndex].value.(*bool))
 
@@ -637,7 +637,7 @@ func handleScheduledTime(timeStr, action string) {
 	defer func() { _ = removePIDFile() }()
 
 	// Attempt to schedule and handle errors if any.
-	if err := scheduleAtSpecificTime(timeStr, action, message, confirmation); err != nil {
+	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation); err != nil {
 		logger.Printf("Error scheduling action: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -645,7 +645,7 @@ func handleScheduledTime(timeStr, action string) {
 }
 
 // handleDelay sets a delay before executing an action.
-func handleDelay(delay int, action string) {
+func handleDelay(ctx context.Context, delay int, action string) {
 	message := *(appFlags[messageIndex].value.(*string))
 	confirmation := *(appFlags[confirmIndex].value.(*bool))
 
@@ -683,6 +683,10 @@ func handleDelay(delay int, action string) {
 			timer.Stop()
 			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
 			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
+			return
+		case <-ctx.Done():
+			// Context cancelled
+			timer.Stop()
 			return
 		}
 	}
