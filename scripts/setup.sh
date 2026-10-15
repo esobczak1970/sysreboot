@@ -6,9 +6,9 @@ set -Eeuo pipefail
 # Go repository setup
 #
 # Standard behavior:
-#   - Go 1.27.1 is the baseline toolchain.
+#   - Go 1.27.2 is the baseline toolchain.
 #   - An older system/bootstrap Go (for example Go 1.24.3) is acceptable.
-#   - Go's built-in toolchain manager downloads/uses Go 1.27.1 automatically.
+#   - Go's built-in toolchain manager downloads/uses Go 1.27.2 automatically.
 #   - A repository requiring a newer Go version may automatically move forward.
 #   - GOTOOLCHAIN=local is intentionally NOT used.
 #
@@ -18,7 +18,7 @@ set -Eeuo pipefail
 #
 # ---------------------------------------------------------------------------
 
-readonly DEFAULT_GO_VERSION="1.27.1"
+readonly DEFAULT_GO_VERSION="1.27.2"
 readonly GO_VERSION="${GO_VERSION:-${DEFAULT_GO_VERSION}}"
 readonly GO_TOOLCHAIN="go${GO_VERSION}+auto"
 
@@ -74,8 +74,8 @@ normalize_go_version() {
     local version="$1"
 
     # Accept either:
-    #   1.27.1
-    #   go1.27.1
+    #   1.27.2
+    #   go1.27.2
     version="${version#go}"
 
     printf '%s\n' "${version}"
@@ -122,7 +122,7 @@ configure_toolchain() {
     #
     # The +auto suffix is important:
     #
-    #   * go1.27.1 is the minimum/default toolchain.
+    #   * go1.27.2 is the minimum/default toolchain.
     #   * repositories can require a newer toolchain later.
     #   * an older bundled/system Go does not become the effective build
     #     toolchain merely because it happens to be first in PATH.
