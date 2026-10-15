@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -146,6 +147,15 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		{
 			name:          "Invalid time string",
 			timeStr:       "not-a-time",
+			action:        ActionReboot,
+			message:       "",
+			confirmation:  false,
+			expectError:   true,
+			errorContains: "invalid time format",
+		},
+		{
+			name:          "Invalid time format (99:99)",
+			timeStr:       "99:99",
 			action:        ActionReboot,
 			message:       "",
 			confirmation:  false,
@@ -1771,6 +1781,42 @@ func TestReadPIDFile(t *testing.T) {
 		}
 	})
 
+	t.Run("empty file", func(t *testing.T) {
+		if err := os.WriteFile(pidPath, []byte(""), 0600); err != nil {
+			t.Fatalf("failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for empty file")
+		}
+		if !strings.Contains(err.Error(), "failed to parse PID file") {
+			t.Errorf("error = %q, want parse error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		_ = os.Remove(pidPath)
+		if err := os.Mkdir(pidPath, 0755); err != nil {
+			t.Fatalf("failed to create directory for read error test: %v", err)
+		}
+		defer os.Remove(pidPath)
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for unreadable file")
+		}
+		if !strings.Contains(err.Error(), "failed to read PID file") {
+			t.Errorf("error = %q, want read error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("failed to remove test PID file: %v", err)
@@ -1847,6 +1893,9 @@ func TestWritePIDFile(t *testing.T) {
 	})
 
 	t.Run("create file failure", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("file permission failure is not deterministic on Windows or as root")
+		}
 		originalOverride := pidFileDirOverride
 
 		// Create a read-only directory
@@ -1878,21 +1927,87 @@ func TestRemovePIDFile(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	path := getPIDFilePath()
+	// Clean up any existing file
+	_ = removePIDFile()
+	defer func() { _ = removePIDFile() }()
 
-	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
-		t.Fatalf("failed to create test PID file: %v", err)
-	}
+	pidPath := getPIDFilePath()
 
-	if err := removePIDFile(); err != nil {
-		t.Fatalf("removePIDFile() returned unexpected error: %v", err)
-	}
+	t.Run("successfully remove existing file", func(t *testing.T) {
+		// Create a dummy PID file
+		err := os.WriteFile(pidPath, []byte("1234\n"), 0644)
+		if err != nil {
+			t.Fatalf("failed to create dummy PID file: %v", err)
+		}
 
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("PID file %s still exists after removePIDFile(); stat error = %v", path, err)
-	}
+		// Remove the file
+		err = removePIDFile()
+		if err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
 
-	if err := removePIDFile(); err != nil {
-		t.Errorf("removePIDFile() returned error for non-existent file: %v", err)
-	}
+		// Verify it was removed
+		if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+			t.Errorf("expected file to be removed, but it still exists or got different error: %v", err)
+		}
+	})
+
+	t.Run("no error when file does not exist", func(t *testing.T) {
+		// Ensure file is deleted
+		_ = os.Remove(pidPath)
+
+		// Call removePIDFile on non-existent file
+		err := removePIDFile()
+		if err != nil {
+			t.Errorf("expected no error when file doesn't exist, got: %v", err)
+		}
+	})
+
+	t.Run("permission error", func(t *testing.T) {
+		// Skip on Windows as directory permissions work differently
+		if runtime.GOOS == "windows" {
+			t.Skip("Skipping directory permission test on Windows")
+		}
+		// Also skipping if root, since root can delete files regardless of permissions
+		if os.Getuid() == 0 {
+			t.Skip("Skipping directory permission test when running as root")
+		}
+
+		// Create a directory without write permissions
+		unwritableDir := t.TempDir()
+
+		// Create a file in a sub-directory first so we can remove write permissions from the sub-dir
+		subDir := filepath.Join(unwritableDir, "readonly")
+		err := os.Mkdir(subDir, 0755)
+		if err != nil {
+			t.Fatalf("failed to create subdir: %v", err)
+		}
+
+		tempPidFileDirOverride := pidFileDirOverride
+		pidFileDirOverride = subDir
+		defer func() { pidFileDirOverride = tempPidFileDirOverride }()
+
+		testPidPath := getPIDFilePath()
+		err = os.WriteFile(testPidPath, []byte("5678\n"), 0644)
+		if err != nil {
+			t.Fatalf("failed to create dummy PID file: %v", err)
+		}
+
+		// Remove write permissions from the directory containing the file
+		err = os.Chmod(subDir, 0555) // Read and execute only
+		if err != nil {
+			t.Fatalf("failed to restrict directory permissions: %v", err)
+		}
+
+		// Restore permissions so t.TempDir() can be cleaned up
+		defer func() { _ = os.Chmod(subDir, 0755) }()
+
+		// Attempt to remove the file
+		err = removePIDFile()
+		if err == nil {
+			t.Error("expected error due to missing permissions, got nil")
+		} else if !os.IsPermission(err) && !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+	})
 }
