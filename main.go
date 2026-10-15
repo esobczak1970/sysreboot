@@ -372,10 +372,8 @@ func getPIDFilePath() string {
 	pidFilePathOnce.Do(func() {
 		// Try primary location first.
 		if runtime.GOOS != "windows" {
-			if _, err := os.Stat(pidFileDir); err == nil {
-				cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
-				return
-			}
+			cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
+			return
 		}
 
 		// Fall back to the platform temporary directory.
