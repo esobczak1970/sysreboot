@@ -152,6 +152,15 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 			expectError:   true,
 			errorContains: "invalid time format",
 		},
+		{
+			name:          "Invalid time format (99:99)",
+			timeStr:       "99:99",
+			action:        ActionReboot,
+			message:       "",
+			confirmation:  false,
+			expectError:   true,
+			errorContains: "invalid time format",
+		},
 	}
 
 	for _, tt := range tests {
