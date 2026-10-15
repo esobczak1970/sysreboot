@@ -1780,6 +1780,42 @@ func TestReadPIDFile(t *testing.T) {
 		}
 	})
 
+	t.Run("empty file", func(t *testing.T) {
+		if err := os.WriteFile(pidPath, []byte(""), 0600); err != nil {
+			t.Fatalf("failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for empty file")
+		}
+		if !strings.Contains(err.Error(), "failed to parse PID file") {
+			t.Errorf("error = %q, want parse error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		_ = os.Remove(pidPath)
+		if err := os.Mkdir(pidPath, 0755); err != nil {
+			t.Fatalf("failed to create directory for read error test: %v", err)
+		}
+		defer os.Remove(pidPath)
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for unreadable file")
+		}
+		if !strings.Contains(err.Error(), "failed to read PID file") {
+			t.Errorf("error = %q, want read error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("failed to remove test PID file: %v", err)
