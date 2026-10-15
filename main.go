@@ -444,6 +444,16 @@ func removePIDFile() error {
 	return nil
 }
 
+// setupPIDFile writes the PID file for the scheduled action and returns a cleanup function to remove it.
+func setupPIDFile(scheduleInfo ScheduleInfo) func() {
+	if err := writePIDFile(scheduleInfo); err != nil {
+		logger.Printf("Warning: failed to write PID file: %v\n", err)
+	}
+
+	// Ensure PID file is removed when done
+	return func() { _ = removePIDFile() }
+}
+
 // processExists checks if a process with the given PID exists
 func processExists(pid int) bool {
 	// On Unix systems, we can send signal 0 to check if process exists
@@ -629,12 +639,7 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 		Message:       message,
 	}
 
-	if err := writePIDFile(scheduleInfo); err != nil {
-		logger.Printf("Warning: failed to write PID file: %v\n", err)
-	}
-
-	// Ensure PID file is removed when done
-	defer func() { _ = removePIDFile() }()
+	defer setupPIDFile(scheduleInfo)()
 
 	// Attempt to schedule and handle errors if any.
 	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation); err != nil {
@@ -658,12 +663,7 @@ func handleDelay(ctx context.Context, delay int, action string) {
 			Message: message,
 		}
 
-		if err := writePIDFile(scheduleInfo); err != nil {
-			logger.Printf("Warning: failed to write PID file: %v\n", err)
-		}
-
-		// Ensure PID file is removed when done
-		defer func() { _ = removePIDFile() }()
+		defer setupPIDFile(scheduleInfo)()
 
 		// Set up signal handling for cancellation
 		sigChan := make(chan os.Signal, 1)
