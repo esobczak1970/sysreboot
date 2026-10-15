@@ -1792,57 +1792,83 @@ func TestReadPIDFile(t *testing.T) {
 func TestWritePIDFile(t *testing.T) {
 	setupTestLogger()
 
-	originalOverride := pidFileDirOverride
-	pidFileDirOverride = t.TempDir()
-	defer func() { pidFileDirOverride = originalOverride }()
-
-	_ = removePIDFile()
-	defer func() { _ = removePIDFile() }()
-
 	info := ScheduleInfo{
 		Action:  "test_action",
 		Delay:   5,
 		Message: "test message",
 	}
 
-	if err := writePIDFile(info); err != nil {
-		t.Fatalf("writePIDFile returned unexpected error: %v", err)
-	}
+	t.Run("success", func(t *testing.T) {
+		originalOverride := pidFileDirOverride
+		pidFileDirOverride = t.TempDir()
+		defer func() { pidFileDirOverride = originalOverride }()
 
-	pidPath := getPIDFilePath()
-	fileInfo, err := os.Stat(pidPath)
-	if err != nil {
-		t.Fatalf("PID file was not created at expected path %s: %v", pidPath, err)
-	}
-	if fileInfo.Mode().Perm() != 0600 {
-		t.Errorf("PID file permissions = %o, want 600", fileInfo.Mode().Perm())
-	}
+		_ = removePIDFile()
+		defer func() { _ = removePIDFile() }()
 
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("failed to read created PID file: %v", err)
-	}
+		if err := writePIDFile(info); err != nil {
+			t.Fatalf("writePIDFile returned unexpected error: %v", err)
+		}
 
-	var parsedInfo ScheduleInfo
-	if err := json.Unmarshal(data, &parsedInfo); err != nil {
-		t.Fatalf("failed to parse PID file JSON: %v", err)
-	}
+		pidPath := getPIDFilePath()
+		fileInfo, err := os.Stat(pidPath)
+		if err != nil {
+			t.Fatalf("PID file was not created at expected path %s: %v", pidPath, err)
+		}
+		if fileInfo.Mode().Perm() != 0600 {
+			t.Errorf("PID file permissions = %o, want 600", fileInfo.Mode().Perm())
+		}
 
-	if parsedInfo.Action != "test_action" {
-		t.Errorf("Action = %q, want %q", parsedInfo.Action, "test_action")
-	}
-	if parsedInfo.Delay != 5 {
-		t.Errorf("Delay = %d, want 5", parsedInfo.Delay)
-	}
-	if parsedInfo.Message != "test message" {
-		t.Errorf("Message = %q, want %q", parsedInfo.Message, "test message")
-	}
-	if parsedInfo.PID != os.Getpid() {
-		t.Errorf("PID = %d, want %d", parsedInfo.PID, os.Getpid())
-	}
-	if parsedInfo.CreatedAt.IsZero() {
-		t.Error("CreatedAt was not set")
-	}
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			t.Fatalf("failed to read created PID file: %v", err)
+		}
+
+		var parsedInfo ScheduleInfo
+		if err := json.Unmarshal(data, &parsedInfo); err != nil {
+			t.Fatalf("failed to parse PID file JSON: %v", err)
+		}
+
+		if parsedInfo.Action != "test_action" {
+			t.Errorf("Action = %q, want %q", parsedInfo.Action, "test_action")
+		}
+		if parsedInfo.Delay != 5 {
+			t.Errorf("Delay = %d, want 5", parsedInfo.Delay)
+		}
+		if parsedInfo.Message != "test message" {
+			t.Errorf("Message = %q, want %q", parsedInfo.Message, "test message")
+		}
+		if parsedInfo.PID != os.Getpid() {
+			t.Errorf("PID = %d, want %d", parsedInfo.PID, os.Getpid())
+		}
+		if parsedInfo.CreatedAt.IsZero() {
+			t.Error("CreatedAt was not set")
+		}
+	})
+
+	t.Run("create file failure", func(t *testing.T) {
+		originalOverride := pidFileDirOverride
+
+		// Create a read-only directory
+		tempDir := t.TempDir()
+		readOnlyDir := tempDir + "/readonly"
+		if err := os.Mkdir(readOnlyDir, 0500); err != nil {
+			t.Fatalf("failed to create read-only dir: %v", err)
+		}
+		pidFileDirOverride = readOnlyDir
+
+		defer func() { pidFileDirOverride = originalOverride }()
+
+		err := writePIDFile(info)
+		if err == nil {
+			t.Fatal("expected error when failing to create PID file, got nil")
+		}
+
+		expectedErrStr := "failed to create PID file"
+		if !strings.Contains(err.Error(), expectedErrStr) {
+			t.Errorf("expected error containing %q, got: %v", expectedErrStr, err)
+		}
+	})
 }
 
 func TestRemovePIDFile(t *testing.T) {
