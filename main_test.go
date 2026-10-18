@@ -1010,21 +1010,169 @@ func TestConstants(t *testing.T) {
 
 // TestMainFunction tests main function logic without running actual os.Exit
 func TestMainFunction(t *testing.T) {
-	if os.Getenv("TEST_MAIN_FUNC") == "1" {
-		// This would run the actual main, but we skip it in CI
-		return
+	setupTestLogger()
+
+	// Mock osExit
+	var exitCode int
+	var exited bool
+	originalOsExit := osExit
+	osExit = func(code int) {
+		exitCode = code
+		exited = true
 	}
+	defer func() { osExit = originalOsExit }()
+
+	// Save and restore os.Args and flags
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+	}()
+
+	// Helper to setup test environment for a subtest
+	setupSubTest := func() {
+		resetFlags()
+		exitCode = -1
+		exited = false
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+		for _, fd := range appFlags {
+			switch v := fd.value.(type) {
+			case *bool:
+				flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
+			case *int:
+				flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
+			case *string:
+				flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
+			}
+		}
+	}
+
+	t.Run("Version Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--version"}
+
+		// Capture stdout to prevent cluttering test output
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 0 {
+			t.Errorf("Expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(buf.String(), appVersion) {
+			t.Errorf("Output did not contain version: %s", buf.String())
+		}
+	})
+
+	t.Run("Status Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--status"}
+
+		oldStdout := os.Stdout
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 0 {
+			t.Errorf("Expected exit code 0, got %d", exitCode)
+		}
+	})
+
+	t.Run("Cancel Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--cancel"}
+
+		oldStdout := os.Stdout
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		// Expecting an error (exit 1) because there's usually no scheduled action in this test environment
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 when cancelling with no scheduled action, got %d", exitCode)
+		}
+	})
 
 	t.Run("Privilege check on Unix", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("Skipping Unix privilege test on Windows")
 		}
 
-		if os.Geteuid() != 0 {
-			// Expected: non-root should fail with error message
-			t.Log("Running as non-root (expected behavior)")
-		} else {
-			t.Log("Running as root")
+		if os.Geteuid() == 0 {
+			t.Skip("Running as root, skipping non-root privilege test")
+		}
+
+		setupSubTest()
+		os.Args = []string{"sysreboot"}
+
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 for missing root privileges, got %d", exitCode)
+		}
+	})
+
+	t.Run("Conflicting flags", func(t *testing.T) {
+		// Mock root access for this test if on unix so we don't fail early
+		if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+			t.Skip("Skipping conflicting flags test as it requires root on unix to pass privilege check")
+		}
+
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--reboot", "--halt"}
+
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
 		}
 	})
 }
@@ -1803,7 +1951,7 @@ func TestReadPIDFile(t *testing.T) {
 		if err := os.Mkdir(pidPath, 0755); err != nil {
 			t.Fatalf("failed to create directory for read error test: %v", err)
 		}
-		defer os.Remove(pidPath)
+		defer func() { _ = os.Remove(pidPath) }()
 
 		info, err := readPIDFile()
 		if err == nil {

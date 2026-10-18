@@ -84,6 +84,7 @@ var (
 	logFile   string      // Path to the log file.
 	logger    *log.Logger // Logger instance for the application.
 	logWriter io.WriteCloser
+	osExit    = os.Exit // Injectable exit function for testing
 )
 
 // Constants for PID file management
@@ -259,7 +260,7 @@ func executeAction(action string, message string, confirmation bool) {
 	if err := executeSystemCommand(action); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to execute %s: %v\n", action, err)
 		logger.Printf("Failed to execute %s: %v\n", action, err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
@@ -561,32 +562,38 @@ func main() {
 	// Display version information if the version flag is set and exit.
 	if *appFlags[versionIndex].value.(*bool) {
 		fmt.Printf("%s version %s\n", appName, appVersion)
-		os.Exit(0)
+		osExit(0)
+		return
 	}
 
 	// Handle status flag
 	if *appFlags[statusIndex].value.(*bool) {
 		if err := showScheduleStatus(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			osExit(1)
+			return
 		}
-		os.Exit(0)
+		osExit(0)
+		return
 	}
 
 	// Handle cancel flag
 	if *appFlags[cancelIndex].value.(*bool) {
 		if err := cancelScheduledAction(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			osExit(1)
+			return
 		}
-		os.Exit(0)
+		osExit(0)
+		return
 	}
 
 	// Validate that user has appropriate privileges on Unix systems
 	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
 		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
 		logger.Println("Attempted to run without root privileges.")
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 
 	// Determine the action to take based on flags provided by the user.
@@ -611,7 +618,8 @@ func main() {
 
 	if conflictingFlags > 1 {
 		fmt.Fprintf(os.Stderr, "Error: Multiple conflicting actions specified. Choose only one.\n")
-		os.Exit(1)
+		osExit(1)
+		return
 	}
 
 	// Handle scheduled time if provided.
@@ -643,7 +651,7 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation); err != nil {
 		logger.Printf("Error scheduling action: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
 
