@@ -376,8 +376,25 @@ func getPIDFilePath() string {
 			return
 		}
 
-		// Fall back to the platform temporary directory.
-		cachedPIDFilePath = filepath.Join(os.TempDir(), pidFileName)
+		// Fall back to a secure user directory
+		configDir, err := os.UserConfigDir()
+		if err == nil {
+			appDir := filepath.Join(configDir, appName)
+			_ = os.MkdirAll(appDir, 0700)
+			cachedPIDFilePath = filepath.Join(appDir, pidFileName)
+			return
+		}
+
+		// If UserConfigDir fails, try UserHomeDir as a secure fallback
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			appDir := filepath.Join(homeDir, "."+appName)
+			_ = os.MkdirAll(appDir, 0700)
+			cachedPIDFilePath = filepath.Join(appDir, pidFileName)
+			return
+		}
+
+		// As a last resort, fall back to the primary location which is secure but may require privileges
+		cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
 	})
 
 	return cachedPIDFilePath
