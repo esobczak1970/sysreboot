@@ -110,7 +110,7 @@ type ScheduleInfo struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
-func init() {
+func initFlags() {
 	// Initialize command-line flags based on appFlags configuration.
 	for _, fd := range appFlags {
 		switch v := fd.value.(type) {
@@ -125,8 +125,10 @@ func init() {
 			flag.StringVar(v, fd.shortName, fd.defaultVal.(string), fd.usage+" (short form)")
 		}
 	}
+}
 
-	initLogger()
+func init() {
+	initFlags()
 
 	// Override the default flag usage message with a custom one.
 	flag.Usage = customUsage
@@ -570,6 +572,7 @@ func cleanup() {
 }
 
 func main() {
+	initLogger()
 	defer cleanup()
 
 	// Parse the command-line flags.
