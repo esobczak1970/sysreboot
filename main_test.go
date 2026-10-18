@@ -1718,6 +1718,78 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 	}
 }
 
+// TestMain_ExitCodes tests that main exits correctly
+func TestMain_ExitCodes(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+
+	exitCode := -1
+	osExit = func(code int) {
+		exitCode = code
+		// Do not actually exit so the test can continue
+	}
+
+	*appFlags[versionIndex].value.(*bool) = true
+	main()
+
+	if exitCode != 0 {
+		t.Errorf("main() with version flag should exit with 0, got %d", exitCode)
+	}
+}
+
+// TestWritePIDFile_PermissionDenied tests writePIDFile failure
+func TestWritePIDFile_PermissionDenied(t *testing.T) {
+	setupTestLogger()
+
+	// Create a read-only directory
+	tempDir := t.TempDir()
+	readOnlyDir := filepath.Join(tempDir, "readonly")
+	if err := os.Mkdir(readOnlyDir, 0500); err != nil {
+		t.Fatalf("failed to create read-only directory: %v", err)
+	}
+
+	// Override PID dir
+	oldPidFileDirOverride := pidFileDirOverride
+	pidFileDirOverride = readOnlyDir
+	defer func() { pidFileDirOverride = oldPidFileDirOverride }()
+
+	// Reset sync.Once by overriding the package level variables using test helpers if possible
+	// Wait, we can't reset sync.Once but we CAN override pidFileDirOverride because getPIDFilePath
+	// checks `pidFileDirOverride` BEFORE the sync.Once block!
+
+	err := writePIDFile(ScheduleInfo{Action: ActionReboot})
+	if err == nil {
+		t.Error("writePIDFile() expected error with read-only directory, got nil")
+	}
+}
+
+// TestReadPIDFile_IsDirError tests readPIDFile failure
+func TestReadPIDFile_IsDirError(t *testing.T) {
+	setupTestLogger()
+
+	tempDir := t.TempDir()
+
+	oldPidFileDirOverride := pidFileDirOverride
+	pidFileDirOverride = tempDir
+	defer func() { pidFileDirOverride = oldPidFileDirOverride }()
+
+	// Make the target PID file a directory!
+	pidPath := getPIDFilePath()
+	if err := os.Mkdir(pidPath, 0755); err != nil {
+		t.Fatalf("failed to create directory at PID path: %v", err)
+	}
+
+	_, err := readPIDFile()
+	if err == nil {
+		t.Error("readPIDFile() expected error when path is a directory, got nil")
+	} else if os.IsNotExist(err) || strings.Contains(err.Error(), "no scheduled action found") {
+		t.Errorf("readPIDFile() should return a read error, got: %v", err)
+	}
+}
+
 // TestExecuteSystemCommandAllOSPaths ensures all OS-specific paths are covered
 func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	setupTestLogger()
