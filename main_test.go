@@ -1337,6 +1337,55 @@ func TestHandleDelay_WithCancellation(t *testing.T) {
 	}
 }
 
+func TestHandleDelay_WithSignalCancellation(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	// Override PID file dir so we don't mess with real system state
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	*appFlags[messageIndex].value.(*string) = "test message"
+	*appFlags[confirmIndex].value.(*bool) = false
+
+	errChan := make(chan struct{})
+	ctx := context.Background()
+
+	// Ignore os.Interrupt globally so that if the signal is sent slightly before
+	// handleDelay registers its own signal handler, it won't crash the test suite.
+	// We restore the default behavior when the test finishes.
+	signal.Ignore(os.Interrupt)
+	defer signal.Reset(os.Interrupt)
+
+	go func() {
+		// Delay > 0 will create PID file and block on timer
+		handleDelay(ctx, 5, ActionReboot)
+		close(errChan)
+	}()
+
+	// Ensure the handleDelay had time to start and write PID file / register signal.Notify
+	time.Sleep(100 * time.Millisecond)
+
+	// Inject signal
+	proc, _ := os.FindProcess(os.Getpid())
+	_ = proc.Signal(os.Interrupt)
+
+	// Wait for goroutine to return
+	select {
+	case <-errChan:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for handleDelay to exit on signal")
+	}
+
+	// Verify PID file was removed on defer
+	pidPath := getPIDFilePath()
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("PID file %s still exists after cancellation; stat error = %v", pidPath, err)
+	}
+}
+
 // TestGetLogFileDirectoryAllPaths tests all code paths in getLogFileDirectory
 func TestGetLogFileDirectoryAllPaths(t *testing.T) {
 	// Save original values
