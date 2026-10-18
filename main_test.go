@@ -1025,9 +1025,11 @@ func TestMainFunction(t *testing.T) {
 	// Save and restore os.Args and flags
 	oldArgs := os.Args
 	oldCommandLine := flag.CommandLine
+	originalPidFileDirOverride := pidFileDirOverride
 	defer func() {
 		os.Args = oldArgs
 		flag.CommandLine = oldCommandLine
+		pidFileDirOverride = originalPidFileDirOverride
 	}()
 
 	// Helper to setup test environment for a subtest
@@ -1035,6 +1037,7 @@ func TestMainFunction(t *testing.T) {
 		resetFlags()
 		exitCode = -1
 		exited = false
+		pidFileDirOverride = t.TempDir()
 		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 		for _, fd := range appFlags {
 			switch v := fd.value.(type) {
