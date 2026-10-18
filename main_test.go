@@ -1803,7 +1803,7 @@ func TestReadPIDFile(t *testing.T) {
 		if err := os.Mkdir(pidPath, 0755); err != nil {
 			t.Fatalf("failed to create directory for read error test: %v", err)
 		}
-		defer os.Remove(pidPath)
+		defer func() { _ = os.Remove(pidPath) }()
 
 		info, err := readPIDFile()
 		if err == nil {
