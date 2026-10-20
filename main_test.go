@@ -1502,13 +1502,11 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 	*appFlags[confirmIndex].value.(*bool) = false
 
 	errChan := make(chan struct{})
-	ctx := context.Background()
 
-	// Ignore os.Interrupt globally so that if the signal is sent slightly before
-	// handleDelay registers its own signal handler, it won't crash the test suite.
-	// We restore the default behavior when the test finishes.
-	signal.Ignore(os.Interrupt)
-	defer signal.Reset(os.Interrupt)
+	// HandleDelay no longer manages signal processing internally;
+	// it relies on the provided context being canceled (e.g. via signal.NotifyContext)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	go func() {
 		// Delay > 0 will create PID file and block on timer
@@ -1516,7 +1514,7 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 		close(errChan)
 	}()
 
-	// Ensure the handleDelay had time to start and write PID file / register signal.Notify
+	// Ensure the handleDelay had time to start and write PID file
 	time.Sleep(100 * time.Millisecond)
 
 	// Inject signal
