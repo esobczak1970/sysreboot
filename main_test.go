@@ -2368,3 +2368,55 @@ func TestExecuteActionIntegration(t *testing.T) {
 		}
 	})
 }
+
+// TestExecuteSystemCommandCombinedOutputFailure verifies that if a command fails,
+// the combined output is included in the returned error.
+func TestExecuteSystemCommandCombinedOutputFailure(t *testing.T) {
+	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
+		t.Skip("Skipping test on macOS without root privileges")
+	}
+
+	setupTestLogger()
+
+	tmpDir := t.TempDir()
+
+	var cmdName string
+	switch runtime.GOOS {
+	case "windows":
+		cmdName = "shutdown.bat"
+	case "linux":
+		cmdName = "systemctl"
+	case "darwin":
+		cmdName = "shutdown"
+	default:
+		t.Skipf("Unsupported OS: %s", runtime.GOOS)
+	}
+
+	mockPath := filepath.Join(tmpDir, cmdName)
+	mockOutput := "MOCK_ERROR_OUTPUT_12345"
+
+	var scriptContent []byte
+	if runtime.GOOS == "windows" {
+		scriptContent = []byte(fmt.Sprintf("@echo off\r\necho %s\r\nexit /b 1\r\n", mockOutput))
+	} else {
+		scriptContent = []byte(fmt.Sprintf("#!/bin/sh\necho '%s'\nexit 1\n", mockOutput))
+	}
+
+	err := os.WriteFile(mockPath, scriptContent, 0755)
+	if err != nil {
+		t.Fatalf("Failed to write mock script: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	defer func() { _ = os.Setenv("PATH", origPath) }()
+	_ = os.Setenv("PATH", tmpDir+string(os.PathListSeparator)+origPath)
+
+	err = executeSystemCommand(ActionReboot)
+	if err == nil {
+		t.Fatalf("Expected executeSystemCommand to fail, but it succeeded")
+	}
+
+	if !strings.Contains(err.Error(), mockOutput) {
+		t.Errorf("Expected error message to contain %q, but got: %v", mockOutput, err)
+	}
+}
