@@ -20,6 +20,37 @@ import (
 
 // TestMain handles test setup and teardown
 func TestMain(m *testing.M) {
+	if logWriter != nil {
+		fmt.Fprintln(os.Stderr, "package initialization opened a user log")
+		os.Exit(1)
+	}
+	logger = log.New(io.Discard, appName+": ", log.LstdFlags)
+
+	// Default command failures must be simulated, even when tests run as root.
+	commandDir, err := os.MkdirTemp("", "sysreboot-test-commands-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, command := range []string{"systemctl", "shutdown", "halt", "wall"} {
+		script := "#!/bin/sh\nexit 1\n"
+		if runtime.GOOS == "windows" {
+			command += ".bat"
+			script = "@exit /b 1\r\n"
+		}
+		if err := os.WriteFile(filepath.Join(commandDir, command), []byte(script), 0700); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			_ = os.RemoveAll(commandDir)
+			os.Exit(1)
+		}
+	}
+	originalPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", commandDir+string(os.PathListSeparator)+originalPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(commandDir)
+		os.Exit(1)
+	}
+
 	// Save original values
 	originalLogWriter := logWriter
 	originalLogger := logger
@@ -30,6 +61,8 @@ func TestMain(m *testing.M) {
 	// Restore original values
 	logWriter = originalLogWriter
 	logger = originalLogger
+	_ = os.Setenv("PATH", originalPath)
+	_ = os.RemoveAll(commandDir)
 
 	os.Exit(code)
 }
@@ -1011,6 +1044,7 @@ func TestConstants(t *testing.T) {
 
 // TestMainFunction tests main function logic without running actual os.Exit
 func TestMain_ConflictingFlagsBranch(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -1030,6 +1064,7 @@ func TestMain_ConflictingFlagsBranch(t *testing.T) {
 }
 
 func TestMainFunction(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 
 	// Mock osExit
@@ -1733,6 +1768,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 
 // TestMain_ExitCodes tests that main exits correctly
 func TestMain_ExitCodes(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -1839,16 +1875,30 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	}
 }
 
-// TestInitLoggerCreation verifies logger is created
+// TestInitLoggerCreation verifies logging uses the selected user directory.
 func TestInitLoggerCreation(t *testing.T) {
-	// Logger should always be initialized by init()
-	if logger == nil {
-		t.Error("init() did not create logger")
-	}
+	isolateUserLog(t)
+	originalLogger, originalWriter, originalFile := logger, logWriter, logFile
+	t.Cleanup(func() {
+		cleanup()
+		logger, logWriter, logFile = originalLogger, originalWriter, originalFile
+	})
 
-	// logWriter may be nil after cleanup in TestMain, which is OK
-	// We just verify it was set up initially
-	t.Log("Logger was properly initialized by init()")
+	initLogger()
+	if logger == nil || logWriter == nil {
+		t.Fatal("initLogger did not create the logger and file writer")
+	}
+	if want := filepath.Join(getLogFileDirectory(), appName+".log"); logFile != want {
+		t.Fatalf("log file = %q, want %q", logFile, want)
+	}
+	logger.Print("isolated logger test")
+	contents, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "isolated logger test") {
+		t.Fatalf("logger did not write to its selected file: %s", contents)
+	}
 }
 
 // TestMainWithNonRootUnix tests main's privilege check
@@ -2394,5 +2444,44 @@ func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
 	dir := getLogFileDirectory()
 	if dir != "." {
 		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
+	}
+}
+
+// isolateUserLog keeps main-path tests from creating or modifying a user log.
+func isolateUserLog(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", t.TempDir())
+	} else {
+		t.Setenv("HOME", t.TempDir())
+	}
+}
+
+func TestMetadataCommandsDoNotNeedLogDirectory(t *testing.T) {
+	if argument := os.Getenv("SYSREBOOT_METADATA_ARGUMENT"); argument == "--help" || argument == "--version" {
+		flag.CommandLine = flag.NewFlagSet("sysreboot", flag.ExitOnError)
+		initFlags()
+		flag.Usage = customUsage
+		os.Args = []string{"sysreboot", argument}
+		main()
+		return
+	}
+
+	for _, argument := range []string{"--help", "--version"} {
+		t.Run(argument, func(t *testing.T) {
+			missingDirectory := filepath.Join(t.TempDir(), "missing")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMetadataCommandsDoNotNeedLogDirectory$")
+			cmd.Env = append(os.Environ(), "SYSREBOOT_METADATA_ARGUMENT="+argument, "HOME="+missingDirectory, "APPDATA="+missingDirectory)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s failed without a writable log directory: %v\n%s", argument, err, output)
+			}
+			if !strings.Contains(string(output), appName) {
+				t.Fatalf("%s did not print metadata: %s", argument, output)
+			}
+			if _, err := os.Stat(missingDirectory); !os.IsNotExist(err) {
+				t.Fatalf("%s unexpectedly touched the log directory: %v", argument, err)
+			}
+		})
 	}
 }

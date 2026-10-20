@@ -563,9 +563,6 @@ func cleanup() {
 }
 
 func main() {
-	initLogger()
-	defer cleanup()
-
 	// Parse the command-line flags.
 	flag.Parse()
 
@@ -575,6 +572,9 @@ func main() {
 		osExit(0)
 		return
 	}
+
+	initLogger()
+	defer cleanup()
 
 	// Handle status flag
 	if *appFlags[statusIndex].value.(*bool) {
