@@ -2312,7 +2312,7 @@ func TestExecuteActionIntegration(t *testing.T) {
 	var syscmd string
 	switch runtime.GOOS {
 	case "windows":
-		syscmd = "shutdown.bat" // Windows executeSystemCommand uses "shutdown"
+		syscmd = "shutdown.exe" // Windows executeSystemCommand uses "shutdown"
 	case "darwin":
 		syscmd = "shutdown"
 	default:
@@ -2383,7 +2383,7 @@ func TestExecuteSystemCommandCombinedOutputFailure(t *testing.T) {
 	var cmdName string
 	switch runtime.GOOS {
 	case "windows":
-		cmdName = "shutdown.bat"
+		cmdName = "shutdown.exe"
 	case "linux":
 		cmdName = "systemctl"
 	case "darwin":
