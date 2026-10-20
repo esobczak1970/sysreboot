@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -2367,4 +2368,100 @@ func TestExecuteActionIntegration(t *testing.T) {
 			t.Fatalf("expected success, got err: %v", err)
 		}
 	})
+}
+
+// TestGetPIDFilePath verifies fallback paths for PID file location when on Windows.
+func TestGetPIDFilePath(t *testing.T) {
+	// Setup test logger to avoid nil pointer panics if getPIDFilePath logs anything (it shouldn't, but just in case)
+	setupTestLogger()
+
+	// Save original global variables
+	origOsGOOS := osGOOS
+	origOsUserConfigDir := osUserConfigDir
+	origOsUserHomeDir := osUserHomeDir
+	origPidFileDirOverride := pidFileDirOverride
+
+	defer func() {
+		osGOOS = origOsGOOS
+		osUserConfigDir = origOsUserConfigDir
+		osUserHomeDir = origOsUserHomeDir
+		pidFileDirOverride = origPidFileDirOverride
+		pidFilePathOnce = sync.Once{}
+		cachedPIDFilePath = ""
+	}()
+
+	tempDir := t.TempDir()
+
+	tests := []struct {
+		name         string
+		os           string
+		configDirErr error
+		homeDirErr   error
+		expectedFunc func() string
+	}{
+		{
+			name:         "Primary path for non-windows",
+			os:           "linux",
+			expectedFunc: func() string { return filepath.Join(pidFileDir, pidFileName) },
+		},
+		{
+			name:         "Windows fallback to UserConfigDir",
+			os:           "windows",
+			configDirErr: nil,
+			expectedFunc: func() string { return filepath.Join(tempDir, "config", appName, pidFileName) },
+		},
+		{
+			name:         "Windows fallback to UserHomeDir",
+			os:           "windows",
+			configDirErr: fmt.Errorf("config dir error"),
+			homeDirErr:   nil,
+			expectedFunc: func() string { return filepath.Join(tempDir, "home", "."+appName, pidFileName) },
+		},
+		{
+			name:         "Windows fallback to last resort (pidFileDir)",
+			os:           "windows",
+			configDirErr: fmt.Errorf("config dir error"),
+			homeDirErr:   fmt.Errorf("home dir error"),
+			expectedFunc: func() string { return filepath.Join(pidFileDir, pidFileName) },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Reset sync.Once and cached variables for each subtest
+			pidFilePathOnce = sync.Once{}
+			cachedPIDFilePath = ""
+			pidFileDirOverride = "" // Ensure override is disabled for this test
+
+			// Apply mocked variables
+			osGOOS = tt.os
+
+			osUserConfigDir = func() (string, error) {
+				if tt.configDirErr != nil {
+					return "", tt.configDirErr
+				}
+				configPath := filepath.Join(tempDir, "config")
+				_ = os.MkdirAll(configPath, 0700)
+				return configPath, nil
+			}
+
+			osUserHomeDir = func() (string, error) {
+				if tt.homeDirErr != nil {
+					return "", tt.homeDirErr
+				}
+				homePath := filepath.Join(tempDir, "home")
+				_ = os.MkdirAll(homePath, 0700)
+				return homePath, nil
+			}
+
+			// Execute function
+			actualPath := getPIDFilePath()
+
+			// Check result
+			expectedPath := tt.expectedFunc()
+			if actualPath != expectedPath {
+				t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
+			}
+		})
+	}
 }
