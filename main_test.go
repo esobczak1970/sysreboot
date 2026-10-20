@@ -2368,3 +2368,23 @@ func TestExecuteActionIntegration(t *testing.T) {
 		}
 	})
 }
+
+// TestGetLogFileDirectoryUserHomeDirError tests the fallback of UserHomeDir
+func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping UserHomeDir test on Windows")
+	}
+
+	oldHome := os.Getenv("HOME")
+	_ = os.Unsetenv("HOME")
+	defer func() {
+		if oldHome != "" {
+			_ = os.Setenv("HOME", oldHome)
+		}
+	}()
+
+	dir := getLogFileDirectory()
+	if dir != "." {
+		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
+	}
+}
