@@ -198,26 +198,8 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	// Set up signal handling for cancellation
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-	// Wait for either the scheduled time or a signal
-	timer := time.NewTimer(durationUntilReboot)
-	select {
-	case <-timer.C:
-		// Time reached, proceed with action
+	if waitForDelayOrSignal(ctx, durationUntilReboot, action) {
 		executeAction(action, message, confirmation)
-	case sig := <-sigChan:
-		// Signal received, cancel action
-		timer.Stop()
-		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-		return nil
-	case <-ctx.Done():
-		// Context cancelled
-		timer.Stop()
-		return nil
 	}
 
 	return nil
@@ -691,31 +673,35 @@ func handleDelay(ctx context.Context, delay int, action string) {
 
 		defer setupPIDFile(scheduleInfo)()
 
-		// Set up signal handling for cancellation
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-		// Wait for either the delay to expire or a signal
-		timer := time.NewTimer(time.Duration(delay) * time.Minute)
-		select {
-		case <-timer.C:
-			// Delay completed, proceed with action
-		case sig := <-sigChan:
-			// Signal received, cancel action
-			timer.Stop()
-			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-			return
-		case <-ctx.Done():
-			// Context cancelled
-			timer.Stop()
+		if !waitForDelayOrSignal(ctx, time.Duration(delay)*time.Minute, action) {
 			return
 		}
 	}
 
 	executeAction(action, message, confirmation)
+}
+
+// waitForDelayOrSignal waits for the specified duration, a signal, or context cancellation.
+// It returns true if the duration expired normally (proceed with action), or false if cancelled.
+func waitForDelayOrSignal(ctx context.Context, duration time.Duration, action string) bool {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	timer := time.NewTimer(duration)
+	select {
+	case <-timer.C:
+		return true
+	case sig := <-sigChan:
+		timer.Stop()
+		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
+		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
+		return false
+	case <-ctx.Done():
+		timer.Stop()
+		return false
+	}
 }
