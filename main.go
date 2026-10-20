@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -474,20 +475,20 @@ func setupPIDFile(scheduleInfo ScheduleInfo) func() {
 
 // processExists checks if a process with the given PID exists
 func processExists(pid int) bool {
-	// On Unix systems, we can send signal 0 to check if process exists
-	if runtime.GOOS != "windows" {
-		process, err := os.FindProcess(pid)
-		if err != nil {
-			return false
-		}
-		err = process.Signal(syscall.Signal(0))
-		return err == nil
-	}
-
-	// On Windows, try to open the process
-	// This is a simplified check
 	process, err := os.FindProcess(pid)
-	return err == nil && process != nil
+	if err != nil {
+		return false
+	}
+	return isProcessAlive(process)
+}
+
+// isProcessAlive checks if an already found process exists and is running
+func isProcessAlive(process *os.Process) bool {
+	if runtime.GOOS != "windows" {
+		err := process.Signal(syscall.Signal(0))
+		return err == nil || !errors.Is(err, os.ErrProcessDone)
+	}
+	return process != nil
 }
 
 // cancelScheduledAction cancels a pending scheduled action
@@ -497,8 +498,11 @@ func cancelScheduledAction() error {
 		return err
 	}
 
+	// Find the process
+	process, err := os.FindProcess(info.PID)
+
 	// Check if the process still exists
-	if !processExists(info.PID) {
+	if err != nil || !isProcessAlive(process) {
 		// Process doesn't exist, just remove the stale PID file
 		if err := removePIDFile(); err != nil {
 			return fmt.Errorf("removed stale PID file, but encountered error: %v", err)
@@ -507,11 +511,6 @@ func cancelScheduledAction() error {
 	}
 
 	// Send SIGTERM to the process
-	process, err := os.FindProcess(info.PID)
-	if err != nil {
-		return fmt.Errorf("failed to find process: %v", err)
-	}
-
 	if err := process.Signal(os.Interrupt); err != nil {
 		// Try SIGKILL if SIGTERM fails
 		if err := process.Kill(); err != nil {
