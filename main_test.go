@@ -9,7 +9,9 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -146,6 +148,15 @@ func TestScheduleAtSpecificTime(t *testing.T) {
 		{
 			name:          "Invalid time string",
 			timeStr:       "not-a-time",
+			action:        ActionReboot,
+			message:       "",
+			confirmation:  false,
+			expectError:   true,
+			errorContains: "invalid time format",
+		},
+		{
+			name:          "Invalid time format (99:99)",
+			timeStr:       "99:99",
 			action:        ActionReboot,
 			message:       "",
 			confirmation:  false,
@@ -999,22 +1010,187 @@ func TestConstants(t *testing.T) {
 }
 
 // TestMainFunction tests main function logic without running actual os.Exit
-func TestMainFunction(t *testing.T) {
-	if os.Getenv("TEST_MAIN_FUNC") == "1" {
-		// This would run the actual main, but we skip it in CI
-		return
+func TestMain_ConflictingFlagsBranch(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+
+	*appFlags[haltIndex].value.(*bool) = true
+	*appFlags[poweroffIndex].value.(*bool) = true
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
 	}
+}
+
+func TestMainFunction(t *testing.T) {
+	setupTestLogger()
+
+	// Mock osExit
+	var exitCode int
+	var exited bool
+	originalOsExit := osExit
+	osExit = func(code int) {
+		exitCode = code
+		exited = true
+	}
+	defer func() { osExit = originalOsExit }()
+
+	// Save and restore os.Args and flags
+	oldArgs := os.Args
+	oldCommandLine := flag.CommandLine
+	originalPidFileDirOverride := pidFileDirOverride
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldCommandLine
+		pidFileDirOverride = originalPidFileDirOverride
+	}()
+
+	// Helper to setup test environment for a subtest
+	setupSubTest := func() {
+		resetFlags()
+		exitCode = -1
+		exited = false
+		pidFileDirOverride = t.TempDir()
+		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
+		for _, fd := range appFlags {
+			switch v := fd.value.(type) {
+			case *bool:
+				flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
+			case *int:
+				flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
+			case *string:
+				flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
+			}
+		}
+	}
+
+	t.Run("Version Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--version"}
+
+		// Capture stdout to prevent cluttering test output
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 0 {
+			t.Errorf("Expected exit code 0, got %d", exitCode)
+		}
+		if !strings.Contains(buf.String(), appVersion) {
+			t.Errorf("Output did not contain version: %s", buf.String())
+		}
+	})
+
+	t.Run("Status Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--status"}
+
+		oldStdout := os.Stdout
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 0 {
+			t.Errorf("Expected exit code 0, got %d", exitCode)
+		}
+	})
+
+	t.Run("Cancel Flag", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--cancel"}
+
+		oldStdout := os.Stdout
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stdout = w
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		// Expecting an error (exit 1) because there's usually no scheduled action in this test environment
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 when cancelling with no scheduled action, got %d", exitCode)
+		}
+	})
 
 	t.Run("Privilege check on Unix", func(t *testing.T) {
 		if runtime.GOOS == "windows" {
 			t.Skip("Skipping Unix privilege test on Windows")
 		}
 
-		if os.Geteuid() != 0 {
-			// Expected: non-root should fail with error message
-			t.Log("Running as non-root (expected behavior)")
-		} else {
-			t.Log("Running as root")
+		if os.Geteuid() == 0 {
+			t.Skip("Running as root, skipping non-root privilege test")
+		}
+
+		setupSubTest()
+		os.Args = []string{"sysreboot"}
+
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 for missing root privileges, got %d", exitCode)
+		}
+	})
+
+	t.Run("Conflicting flags", func(t *testing.T) {
+		setupSubTest()
+		os.Args = []string{"sysreboot", "--reboot", "--halt"}
+
+		oldStderr := os.Stderr
+		_, w, _ := os.Pipe()
+		os.Stderr = w
+
+		main()
+
+		_ = w.Close()
+		os.Stderr = oldStderr
+
+		if !exited {
+			t.Error("main() did not call osExit")
+		}
+		if exitCode != 1 {
+			t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
 		}
 	})
 }
@@ -1327,6 +1503,53 @@ func TestHandleDelay_WithCancellation(t *testing.T) {
 	}
 }
 
+func TestHandleDelay_WithSignalCancellation(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	// Override PID file dir so we don't mess with real system state
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	*appFlags[messageIndex].value.(*string) = "test message"
+	*appFlags[confirmIndex].value.(*bool) = false
+
+	errChan := make(chan struct{})
+
+	// HandleDelay no longer manages signal processing internally;
+	// it relies on the provided context being canceled (e.g. via signal.NotifyContext)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	go func() {
+		// Delay > 0 will create PID file and block on timer
+		handleDelay(ctx, 5, ActionReboot)
+		close(errChan)
+	}()
+
+	// Ensure the handleDelay had time to start and write PID file
+	time.Sleep(100 * time.Millisecond)
+
+	// Inject signal
+	proc, _ := os.FindProcess(os.Getpid())
+	_ = proc.Signal(os.Interrupt)
+
+	// Wait for goroutine to return
+	select {
+	case <-errChan:
+		// Success
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for handleDelay to exit on signal")
+	}
+
+	// Verify PID file was removed on defer
+	pidPath := getPIDFilePath()
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("PID file %s still exists after cancellation; stat error = %v", pidPath, err)
+	}
+}
+
 // TestGetLogFileDirectoryAllPaths tests all code paths in getLogFileDirectory
 func TestGetLogFileDirectoryAllPaths(t *testing.T) {
 	// Save original values
@@ -1505,6 +1728,78 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 	logOutput := buf.String()
 	if logOutput != "" {
 		t.Logf("Logger output: %s", logOutput)
+	}
+}
+
+// TestMain_ExitCodes tests that main exits correctly
+func TestMain_ExitCodes(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+
+	exitCode := -1
+	osExit = func(code int) {
+		exitCode = code
+		// Do not actually exit so the test can continue
+	}
+
+	*appFlags[versionIndex].value.(*bool) = true
+	main()
+
+	if exitCode != 0 {
+		t.Errorf("main() with version flag should exit with 0, got %d", exitCode)
+	}
+}
+
+// TestWritePIDFile_PermissionDenied tests writePIDFile failure
+func TestWritePIDFile_PermissionDenied(t *testing.T) {
+	setupTestLogger()
+
+	// Create a read-only directory
+	tempDir := t.TempDir()
+	readOnlyDir := filepath.Join(tempDir, "readonly")
+	if err := os.Mkdir(readOnlyDir, 0500); err != nil {
+		t.Fatalf("failed to create read-only directory: %v", err)
+	}
+
+	// Override PID dir
+	oldPidFileDirOverride := pidFileDirOverride
+	pidFileDirOverride = readOnlyDir
+	defer func() { pidFileDirOverride = oldPidFileDirOverride }()
+
+	// Reset sync.Once by overriding the package level variables using test helpers if possible
+	// Wait, we can't reset sync.Once but we CAN override pidFileDirOverride because getPIDFilePath
+	// checks `pidFileDirOverride` BEFORE the sync.Once block!
+
+	err := writePIDFile(ScheduleInfo{Action: ActionReboot})
+	if err == nil {
+		t.Error("writePIDFile() expected error with read-only directory, got nil")
+	}
+}
+
+// TestReadPIDFile_IsDirError tests readPIDFile failure
+func TestReadPIDFile_IsDirError(t *testing.T) {
+	setupTestLogger()
+
+	tempDir := t.TempDir()
+
+	oldPidFileDirOverride := pidFileDirOverride
+	pidFileDirOverride = tempDir
+	defer func() { pidFileDirOverride = oldPidFileDirOverride }()
+
+	// Make the target PID file a directory!
+	pidPath := getPIDFilePath()
+	if err := os.Mkdir(pidPath, 0755); err != nil {
+		t.Fatalf("failed to create directory at PID path: %v", err)
+	}
+
+	_, err := readPIDFile()
+	if err == nil {
+		t.Error("readPIDFile() expected error when path is a directory, got nil")
+	} else if os.IsNotExist(err) || strings.Contains(err.Error(), "no scheduled action found") {
+		t.Errorf("readPIDFile() should return a read error, got: %v", err)
 	}
 }
 
@@ -1771,6 +2066,42 @@ func TestReadPIDFile(t *testing.T) {
 		}
 	})
 
+	t.Run("empty file", func(t *testing.T) {
+		if err := os.WriteFile(pidPath, []byte(""), 0600); err != nil {
+			t.Fatalf("failed to write test PID file: %v", err)
+		}
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for empty file")
+		}
+		if !strings.Contains(err.Error(), "failed to parse PID file") {
+			t.Errorf("error = %q, want parse error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
+	t.Run("read error", func(t *testing.T) {
+		_ = os.Remove(pidPath)
+		if err := os.Mkdir(pidPath, 0755); err != nil {
+			t.Fatalf("failed to create directory for read error test: %v", err)
+		}
+		defer func() { _ = os.Remove(pidPath) }()
+
+		info, err := readPIDFile()
+		if err == nil {
+			t.Fatal("readPIDFile returned no error for unreadable file")
+		}
+		if !strings.Contains(err.Error(), "failed to read PID file") {
+			t.Errorf("error = %q, want read error", err)
+		}
+		if info != nil {
+			t.Errorf("info = %+v, want nil", info)
+		}
+	})
+
 	t.Run("missing file", func(t *testing.T) {
 		if err := os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
 			t.Fatalf("failed to remove test PID file: %v", err)
@@ -1792,57 +2123,86 @@ func TestReadPIDFile(t *testing.T) {
 func TestWritePIDFile(t *testing.T) {
 	setupTestLogger()
 
-	originalOverride := pidFileDirOverride
-	pidFileDirOverride = t.TempDir()
-	defer func() { pidFileDirOverride = originalOverride }()
-
-	_ = removePIDFile()
-	defer func() { _ = removePIDFile() }()
-
 	info := ScheduleInfo{
 		Action:  "test_action",
 		Delay:   5,
 		Message: "test message",
 	}
 
-	if err := writePIDFile(info); err != nil {
-		t.Fatalf("writePIDFile returned unexpected error: %v", err)
-	}
+	t.Run("success", func(t *testing.T) {
+		originalOverride := pidFileDirOverride
+		pidFileDirOverride = t.TempDir()
+		defer func() { pidFileDirOverride = originalOverride }()
 
-	pidPath := getPIDFilePath()
-	fileInfo, err := os.Stat(pidPath)
-	if err != nil {
-		t.Fatalf("PID file was not created at expected path %s: %v", pidPath, err)
-	}
-	if fileInfo.Mode().Perm() != 0600 {
-		t.Errorf("PID file permissions = %o, want 600", fileInfo.Mode().Perm())
-	}
+		_ = removePIDFile()
+		defer func() { _ = removePIDFile() }()
 
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatalf("failed to read created PID file: %v", err)
-	}
+		if err := writePIDFile(info); err != nil {
+			t.Fatalf("writePIDFile returned unexpected error: %v", err)
+		}
 
-	var parsedInfo ScheduleInfo
-	if err := json.Unmarshal(data, &parsedInfo); err != nil {
-		t.Fatalf("failed to parse PID file JSON: %v", err)
-	}
+		pidPath := getPIDFilePath()
+		fileInfo, err := os.Stat(pidPath)
+		if err != nil {
+			t.Fatalf("PID file was not created at expected path %s: %v", pidPath, err)
+		}
+		if fileInfo.Mode().Perm() != 0600 {
+			t.Errorf("PID file permissions = %o, want 600", fileInfo.Mode().Perm())
+		}
 
-	if parsedInfo.Action != "test_action" {
-		t.Errorf("Action = %q, want %q", parsedInfo.Action, "test_action")
-	}
-	if parsedInfo.Delay != 5 {
-		t.Errorf("Delay = %d, want 5", parsedInfo.Delay)
-	}
-	if parsedInfo.Message != "test message" {
-		t.Errorf("Message = %q, want %q", parsedInfo.Message, "test message")
-	}
-	if parsedInfo.PID != os.Getpid() {
-		t.Errorf("PID = %d, want %d", parsedInfo.PID, os.Getpid())
-	}
-	if parsedInfo.CreatedAt.IsZero() {
-		t.Error("CreatedAt was not set")
-	}
+		data, err := os.ReadFile(pidPath)
+		if err != nil {
+			t.Fatalf("failed to read created PID file: %v", err)
+		}
+
+		var parsedInfo ScheduleInfo
+		if err := json.Unmarshal(data, &parsedInfo); err != nil {
+			t.Fatalf("failed to parse PID file JSON: %v", err)
+		}
+
+		if parsedInfo.Action != "test_action" {
+			t.Errorf("Action = %q, want %q", parsedInfo.Action, "test_action")
+		}
+		if parsedInfo.Delay != 5 {
+			t.Errorf("Delay = %d, want 5", parsedInfo.Delay)
+		}
+		if parsedInfo.Message != "test message" {
+			t.Errorf("Message = %q, want %q", parsedInfo.Message, "test message")
+		}
+		if parsedInfo.PID != os.Getpid() {
+			t.Errorf("PID = %d, want %d", parsedInfo.PID, os.Getpid())
+		}
+		if parsedInfo.CreatedAt.IsZero() {
+			t.Error("CreatedAt was not set")
+		}
+	})
+
+	t.Run("create file failure", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("file permission failure is not deterministic on Windows or as root")
+		}
+		originalOverride := pidFileDirOverride
+
+		// Create a read-only directory
+		tempDir := t.TempDir()
+		readOnlyDir := tempDir + "/readonly"
+		if err := os.Mkdir(readOnlyDir, 0500); err != nil {
+			t.Fatalf("failed to create read-only dir: %v", err)
+		}
+		pidFileDirOverride = readOnlyDir
+
+		defer func() { pidFileDirOverride = originalOverride }()
+
+		err := writePIDFile(info)
+		if err == nil {
+			t.Fatal("expected error when failing to create PID file, got nil")
+		}
+
+		expectedErrStr := "failed to create PID file"
+		if !strings.Contains(err.Error(), expectedErrStr) {
+			t.Errorf("expected error containing %q, got: %v", expectedErrStr, err)
+		}
+	})
 }
 
 func TestRemovePIDFile(t *testing.T) {
@@ -1852,21 +2212,187 @@ func TestRemovePIDFile(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	path := getPIDFilePath()
+	// Clean up any existing file
+	_ = removePIDFile()
+	defer func() { _ = removePIDFile() }()
 
-	if err := os.WriteFile(path, []byte("dummy"), 0600); err != nil {
-		t.Fatalf("failed to create test PID file: %v", err)
+	pidPath := getPIDFilePath()
+
+	t.Run("successfully remove existing file", func(t *testing.T) {
+		// Create a dummy PID file
+		err := os.WriteFile(pidPath, []byte("1234\n"), 0644)
+		if err != nil {
+			t.Fatalf("failed to create dummy PID file: %v", err)
+		}
+
+		// Remove the file
+		err = removePIDFile()
+		if err != nil {
+			t.Errorf("expected no error, got: %v", err)
+		}
+
+		// Verify it was removed
+		if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+			t.Errorf("expected file to be removed, but it still exists or got different error: %v", err)
+		}
+	})
+
+	t.Run("no error when file does not exist", func(t *testing.T) {
+		// Ensure file is deleted
+		_ = os.Remove(pidPath)
+
+		// Call removePIDFile on non-existent file
+		err := removePIDFile()
+		if err != nil {
+			t.Errorf("expected no error when file doesn't exist, got: %v", err)
+		}
+	})
+
+	t.Run("permission error", func(t *testing.T) {
+		// Skip on Windows as directory permissions work differently
+		if runtime.GOOS == "windows" {
+			t.Skip("Skipping directory permission test on Windows")
+		}
+		// Also skipping if root, since root can delete files regardless of permissions
+		if os.Getuid() == 0 {
+			t.Skip("Skipping directory permission test when running as root")
+		}
+
+		// Create a directory without write permissions
+		unwritableDir := t.TempDir()
+
+		// Create a file in a sub-directory first so we can remove write permissions from the sub-dir
+		subDir := filepath.Join(unwritableDir, "readonly")
+		err := os.Mkdir(subDir, 0755)
+		if err != nil {
+			t.Fatalf("failed to create subdir: %v", err)
+		}
+
+		tempPidFileDirOverride := pidFileDirOverride
+		pidFileDirOverride = subDir
+		defer func() { pidFileDirOverride = tempPidFileDirOverride }()
+
+		testPidPath := getPIDFilePath()
+		err = os.WriteFile(testPidPath, []byte("5678\n"), 0644)
+		if err != nil {
+			t.Fatalf("failed to create dummy PID file: %v", err)
+		}
+
+		// Remove write permissions from the directory containing the file
+		err = os.Chmod(subDir, 0555) // Read and execute only
+		if err != nil {
+			t.Fatalf("failed to restrict directory permissions: %v", err)
+		}
+
+		// Restore permissions so t.TempDir() can be cleaned up
+		defer func() { _ = os.Chmod(subDir, 0755) }()
+
+		// Attempt to remove the file
+		err = removePIDFile()
+		if err == nil {
+			t.Error("expected error due to missing permissions, got nil")
+		} else if !os.IsPermission(err) && !strings.Contains(err.Error(), "permission denied") {
+			t.Errorf("expected permission error, got: %v", err)
+		}
+	})
+}
+
+func TestExecuteActionIntegration(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	// This block runs when executed as a subprocess by the test itself
+	if os.Getenv("TEST_EXECUTE_ACTION_INTEGRATION") == "1" {
+		mockDir := os.Getenv("MOCK_BIN_DIR")
+		if mockDir != "" {
+			_ = os.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		}
+
+		*appFlags[verboseIndex].value.(*bool) = true
+
+		// If MOCK_FAIL is 1, it will fail and os.Exit(1).
+		executeAction(ActionReboot, os.Getenv("TEST_MESSAGE"), false)
+
+		// If it reaches here without os.Exit(1), exit 0 to indicate success
+		os.Exit(0)
 	}
 
-	if err := removePIDFile(); err != nil {
-		t.Fatalf("removePIDFile() returned unexpected error: %v", err)
+	// Setup a temporary directory for mock executables
+	tmpDir := t.TempDir()
+
+	// Create mock executables based on the OS
+	var syscmd string
+	switch runtime.GOOS {
+	case "windows":
+		syscmd = "shutdown.bat" // Windows executeSystemCommand uses "shutdown"
+	case "darwin":
+		syscmd = "shutdown"
+	default:
+		syscmd = "systemctl"
 	}
 
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Errorf("PID file %s still exists after removePIDFile(); stat error = %v", path, err)
+	mockBinSuccess := filepath.Join(tmpDir, syscmd)
+	_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
+
+	// also mock wall
+	if runtime.GOOS != "windows" {
+		mockWall := filepath.Join(tmpDir, "wall")
+		_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 0\n"), 0755)
 	}
 
-	if err := removePIDFile(); err != nil {
-		t.Errorf("removePIDFile() returned error for non-existent file: %v", err)
+	t.Run("SuccessWithMessage", func(t *testing.T) {
+		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		err := cmd.Run()
+		if err != nil {
+			t.Fatalf("expected success, got err: %v", err)
+		}
+	})
+
+	t.Run("Failure", func(t *testing.T) {
+		// Overwrite with failing executable
+		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 1\n"), 0755)
+
+		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir)
+		err := cmd.Run()
+		if e, ok := err.(*exec.ExitError); ok && !e.Success() {
+			// Expected
+		} else {
+			t.Fatalf("expected exit status 1, got err: %v", err)
+		}
+	})
+
+	t.Run("SuccessWithMessageFailedWall", func(t *testing.T) {
+		// Restore successful syscmd
+		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
+		// Make wall fail
+		if runtime.GOOS != "windows" {
+			mockWall := filepath.Join(tmpDir, "wall")
+			_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 1\n"), 0755)
+		}
+
+		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		err := cmd.Run()
+		if err != nil {
+			t.Fatalf("expected success, got err: %v", err)
+		}
+	})
+}
+
+// TestGetLogFileDirectoryUserHomeDirError tests the fallback of UserHomeDir
+func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping UserHomeDir test on Windows")
+	}
+
+	// t.Setenv safely restores the environment variable when the test completes
+	// even if the value was originally unset.
+	t.Setenv("HOME", "")
+
+	dir := getLogFileDirectory()
+	if dir != "." {
+		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
 	}
 }
