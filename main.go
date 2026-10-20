@@ -305,16 +305,19 @@ func executeSystemCommand(action string) error {
 	// Execute the system command associated with the specified action.
 	var cmd *exec.Cmd
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	switch runtime.GOOS {
 	case "linux":
 		// Use systemctl for modern Linux systems
-		cmd = exec.Command("systemctl", action)
+		cmd = exec.CommandContext(ctx, "systemctl", action)
 	case "windows":
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "/r", "/t", "0")
+			cmd = exec.CommandContext(ctx, "shutdown", "/r", "/t", "0")
 		case ActionPoweroff, ActionHalt:
-			cmd = exec.Command("shutdown", "/s", "/t", "0")
+			cmd = exec.CommandContext(ctx, "shutdown", "/s", "/t", "0")
 		default:
 			return fmt.Errorf("unsupported action for Windows: %s", action)
 		}
@@ -326,22 +329,17 @@ func executeSystemCommand(action string) error {
 
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "-r", "now")
+			cmd = exec.CommandContext(ctx, "shutdown", "-r", "now")
 		case ActionPoweroff:
-			cmd = exec.Command("shutdown", "-h", "now")
+			cmd = exec.CommandContext(ctx, "shutdown", "-h", "now")
 		case ActionHalt:
-			cmd = exec.Command("halt")
+			cmd = exec.CommandContext(ctx, "halt")
 		default:
 			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
 	default:
 		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
