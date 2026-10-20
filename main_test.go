@@ -2375,13 +2375,9 @@ func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
 		t.Skip("Skipping UserHomeDir test on Windows")
 	}
 
-	oldHome := os.Getenv("HOME")
-	_ = os.Unsetenv("HOME")
-	defer func() {
-		if oldHome != "" {
-			_ = os.Setenv("HOME", oldHome)
-		}
-	}()
+	// t.Setenv safely restores the environment variable when the test completes
+	// even if the value was originally unset.
+	t.Setenv("HOME", "")
 
 	dir := getLogFileDirectory()
 	if dir != "." {
