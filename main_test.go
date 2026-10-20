@@ -2370,21 +2370,13 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 }
 
-// TestGetPIDFilePath verifies fallback paths for PID file location when on Windows.
+// TestGetPIDFilePath verifies fallback paths for PID file location using real OS behavior.
 func TestGetPIDFilePath(t *testing.T) {
-	// Setup test logger to avoid nil pointer panics if getPIDFilePath logs anything (it shouldn't, but just in case)
 	setupTestLogger()
 
-	// Save original global variables
-	origOsGOOS := osGOOS
-	origOsUserConfigDir := osUserConfigDir
-	origOsUserHomeDir := osUserHomeDir
 	origPidFileDirOverride := pidFileDirOverride
 
 	defer func() {
-		osGOOS = origOsGOOS
-		osUserConfigDir = origOsUserConfigDir
-		osUserHomeDir = origOsUserHomeDir
 		pidFileDirOverride = origPidFileDirOverride
 		pidFilePathOnce = sync.Once{}
 		cachedPIDFilePath = ""
@@ -2392,76 +2384,85 @@ func TestGetPIDFilePath(t *testing.T) {
 
 	tempDir := t.TempDir()
 
-	tests := []struct {
-		name         string
-		os           string
-		configDirErr error
-		homeDirErr   error
-		expectedFunc func() string
-	}{
-		{
-			name:         "Primary path for non-windows",
-			os:           "linux",
-			expectedFunc: func() string { return filepath.Join(pidFileDir, pidFileName) },
-		},
-		{
-			name:         "Windows fallback to UserConfigDir",
-			os:           "windows",
-			configDirErr: nil,
-			expectedFunc: func() string { return filepath.Join(tempDir, "config", appName, pidFileName) },
-		},
-		{
-			name:         "Windows fallback to UserHomeDir",
-			os:           "windows",
-			configDirErr: fmt.Errorf("config dir error"),
-			homeDirErr:   nil,
-			expectedFunc: func() string { return filepath.Join(tempDir, "home", "."+appName, pidFileName) },
-		},
-		{
-			name:         "Windows fallback to last resort (pidFileDir)",
-			os:           "windows",
-			configDirErr: fmt.Errorf("config dir error"),
-			homeDirErr:   fmt.Errorf("home dir error"),
-			expectedFunc: func() string { return filepath.Join(pidFileDir, pidFileName) },
-		},
-	}
+	// Ensure override is disabled for this test to test actual fallback logic
+	pidFileDirOverride = ""
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Reset sync.Once and cached variables for each subtest
-			pidFilePathOnce = sync.Once{}
-			cachedPIDFilePath = ""
-			pidFileDirOverride = "" // Ensure override is disabled for this test
+	t.Run("Primary path for non-windows", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Skipping non-Windows test on Windows")
+		}
+		pidFilePathOnce = sync.Once{}
+		cachedPIDFilePath = ""
 
-			// Apply mocked variables
-			osGOOS = tt.os
+		actualPath := getPIDFilePath()
+		expectedPath := filepath.Join(pidFileDir, pidFileName)
 
-			osUserConfigDir = func() (string, error) {
-				if tt.configDirErr != nil {
-					return "", tt.configDirErr
-				}
-				configPath := filepath.Join(tempDir, "config")
-				_ = os.MkdirAll(configPath, 0700)
-				return configPath, nil
-			}
+		if actualPath != expectedPath {
+			t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
+		}
+	})
 
-			osUserHomeDir = func() (string, error) {
-				if tt.homeDirErr != nil {
-					return "", tt.homeDirErr
-				}
-				homePath := filepath.Join(tempDir, "home")
-				_ = os.MkdirAll(homePath, 0700)
-				return homePath, nil
-			}
+	t.Run("Windows fallback to UserConfigDir", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Skipping Windows-specific test on non-Windows")
+		}
+		pidFilePathOnce = sync.Once{}
+		cachedPIDFilePath = ""
 
-			// Execute function
-			actualPath := getPIDFilePath()
+		// Set APPDATA to a known temp directory
+		testAppData := filepath.Join(tempDir, "appdata")
+		_ = os.MkdirAll(testAppData, 0700)
+		t.Setenv("APPDATA", testAppData)
 
-			// Check result
-			expectedPath := tt.expectedFunc()
-			if actualPath != expectedPath {
-				t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
-			}
-		})
-	}
+		actualPath := getPIDFilePath()
+		expectedPath := filepath.Join(testAppData, appName, pidFileName)
+
+		if actualPath != expectedPath {
+			t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
+		}
+	})
+
+	t.Run("Windows fallback to UserHomeDir", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Skipping Windows-specific test on non-Windows")
+		}
+		pidFilePathOnce = sync.Once{}
+		cachedPIDFilePath = ""
+
+		// Simulate UserConfigDir failure by unsetting APPDATA
+		t.Setenv("APPDATA", "")
+
+		// Set HOME to a known temp directory
+		testHome := filepath.Join(tempDir, "home")
+		_ = os.MkdirAll(testHome, 0700)
+		t.Setenv("HOME", testHome)
+		t.Setenv("USERPROFILE", testHome)
+
+		actualPath := getPIDFilePath()
+		expectedPath := filepath.Join(testHome, "."+appName, pidFileName)
+
+		if actualPath != expectedPath {
+			t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
+		}
+	})
+
+	t.Run("Windows fallback to last resort", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("Skipping Windows-specific test on non-Windows")
+		}
+		pidFilePathOnce = sync.Once{}
+		cachedPIDFilePath = ""
+
+		// Simulate both UserConfigDir and UserHomeDir failure
+		t.Setenv("APPDATA", "")
+		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
+
+		actualPath := getPIDFilePath()
+		expectedPath := filepath.Join(pidFileDir, pidFileName)
+
+		if actualPath != expectedPath {
+			t.Errorf("getPIDFilePath() = %s; want %s", actualPath, expectedPath)
+		}
+	})
 }

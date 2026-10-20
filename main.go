@@ -81,13 +81,10 @@ var appFlags = []flagData{
 }
 
 var (
-	logFile         string      // Path to the log file.
-	logger          *log.Logger // Logger instance for the application.
-	logWriter       io.WriteCloser
-	osExit          = os.Exit // Injectable exit function for testing
-	osGOOS          = runtime.GOOS
-	osUserConfigDir = os.UserConfigDir
-	osUserHomeDir   = os.UserHomeDir
+	logFile   string      // Path to the log file.
+	logger    *log.Logger // Logger instance for the application.
+	logWriter io.WriteCloser
+	osExit    = os.Exit // Injectable exit function for testing
 )
 
 // Constants for PID file management
@@ -377,13 +374,13 @@ func getPIDFilePath() string {
 
 	pidFilePathOnce.Do(func() {
 		// Try primary location first.
-		if osGOOS != "windows" {
+		if runtime.GOOS != "windows" {
 			cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
 			return
 		}
 
 		// Fall back to a secure user directory
-		configDir, err := osUserConfigDir()
+		configDir, err := os.UserConfigDir()
 		if err == nil {
 			appDir := filepath.Join(configDir, appName)
 			_ = os.MkdirAll(appDir, 0700)
@@ -392,7 +389,7 @@ func getPIDFilePath() string {
 		}
 
 		// If UserConfigDir fails, try UserHomeDir as a secure fallback
-		if homeDir, err := osUserHomeDir(); err == nil {
+		if homeDir, err := os.UserHomeDir(); err == nil {
 			appDir := filepath.Join(homeDir, "."+appName)
 			_ = os.MkdirAll(appDir, 0700)
 			cachedPIDFilePath = filepath.Join(appDir, pidFileName)
