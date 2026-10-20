@@ -598,14 +598,6 @@ func main() {
 		return
 	}
 
-	// Validate that user has appropriate privileges on Unix systems
-	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
-		logger.Println("Attempted to run without root privileges.")
-		osExit(1)
-		return
-	}
-
 	// Determine the action to take based on flags provided by the user.
 	action := ActionReboot // Default action is to reboot.
 	conflictingFlags := 0
@@ -628,6 +620,14 @@ func main() {
 
 	if conflictingFlags > 1 {
 		fmt.Fprintf(os.Stderr, "Error: Multiple conflicting actions specified. Choose only one.\n")
+		osExit(1)
+		return
+	}
+
+	// Validate that user has appropriate privileges on Unix systems
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
+		logger.Println("Attempted to run without root privileges.")
 		osExit(1)
 		return
 	}

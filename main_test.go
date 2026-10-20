@@ -1010,6 +1010,25 @@ func TestConstants(t *testing.T) {
 }
 
 // TestMainFunction tests main function logic without running actual os.Exit
+func TestMain_ConflictingFlagsBranch(t *testing.T) {
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+
+	*appFlags[haltIndex].value.(*bool) = true
+	*appFlags[poweroffIndex].value.(*bool) = true
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
+	}
+}
+
 func TestMainFunction(t *testing.T) {
 	setupTestLogger()
 
@@ -1155,11 +1174,6 @@ func TestMainFunction(t *testing.T) {
 	})
 
 	t.Run("Conflicting flags", func(t *testing.T) {
-		// Mock root access for this test if on unix so we don't fail early
-		if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-			t.Skip("Skipping conflicting flags test as it requires root on unix to pass privilege check")
-		}
-
 		setupSubTest()
 		os.Args = []string{"sysreboot", "--reboot", "--halt"}
 
