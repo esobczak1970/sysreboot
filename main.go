@@ -198,25 +198,17 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	// Set up signal handling for cancellation
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	// Wait for either the scheduled time or a signal
 	timer := time.NewTimer(durationUntilReboot)
 	select {
 	case <-timer.C:
 		// Time reached, proceed with action
 		executeAction(action, message, confirmation)
-	case sig := <-sigChan:
-		// Signal received, cancel action
-		timer.Stop()
-		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-		return nil
 	case <-ctx.Done():
-		// Context cancelled
+		// Context cancelled or signal received
 		timer.Stop()
+		fmt.Printf("\nCancelling scheduled action.\n")
+		logger.Printf("Cancelled %s action due to context cancellation\n", action)
 		return nil
 	}
 
@@ -641,7 +633,9 @@ func main() {
 	}
 
 	// Handle scheduled time if provided.
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	if *(appFlags[timeIndex].value.(*string)) != "" {
 		handleScheduledTime(ctx, *(appFlags[timeIndex].value.(*string)), action)
 		return
@@ -689,10 +683,6 @@ func handleDelay(ctx context.Context, delay int, action string) {
 
 		defer setupPIDFile(scheduleInfo)()
 
-		// Set up signal handling for cancellation
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
@@ -702,15 +692,11 @@ func handleDelay(ctx context.Context, delay int, action string) {
 		select {
 		case <-timer.C:
 			// Delay completed, proceed with action
-		case sig := <-sigChan:
-			// Signal received, cancel action
-			timer.Stop()
-			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-			return
 		case <-ctx.Done():
-			// Context cancelled
+			// Context cancelled or signal received
 			timer.Stop()
+			fmt.Printf("\nCancelling scheduled action.\n")
+			logger.Printf("Cancelled %s action due to context cancellation\n", action)
 			return
 		}
 	}
