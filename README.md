@@ -6,7 +6,7 @@ Detailed usage notes are also available in [\`docs/README.md\`](docs/README.md).
 
 ## Requirements
 
-- Go 1.27.2 (required).
+- Go 1.27.3 (required).
 - Appropriate operating-system privileges for reboot, shutdown, or halt operations.
 - Unix-specific features such as \`wall\` are only available on supported Unix-like systems.
 
