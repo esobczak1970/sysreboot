@@ -30,6 +30,9 @@ Examples:
 
 The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges.
 
+Help and version commands run without opening the user log. Tests isolate user
+logs and never execute real reboot or shutdown actions.
+
 ## Development
 
 \`\`\`bash
