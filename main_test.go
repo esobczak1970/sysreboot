@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -2367,4 +2368,204 @@ func TestExecuteActionIntegration(t *testing.T) {
 			t.Fatalf("expected success, got err: %v", err)
 		}
 	})
+}
+
+// mockProcessWithSignalCheck implements processController for testing
+type mockProcessWithSignalCheck struct {
+	signalErr     error
+	killErr       error
+	signalZeroErr error
+}
+
+func (m *mockProcessWithSignalCheck) Signal(sig os.Signal) error {
+	// syscall.Signal(0) is used by processExists
+	if sig == syscall.Signal(0) {
+		return m.signalZeroErr
+	}
+	return m.signalErr
+}
+
+func (m *mockProcessWithSignalCheck) Kill() error {
+	return m.killErr
+}
+
+func TestCancelScheduledAction_KillFailure(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	info := ScheduleInfo{
+		Action: ActionReboot,
+		PID:    9999, // Dummy PID
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	origFindProcessFunc := findProcessFunc
+	defer func() { findProcessFunc = origFindProcessFunc }()
+
+	// Mock findProcessFunc to return our mock process that fails both Signal and Kill
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessWithSignalCheck{
+			signalErr: fmt.Errorf("mock signal error"),
+			killErr:   fmt.Errorf("mock kill error"),
+		}, nil
+	}
+
+	err := cancelScheduledAction()
+	if err == nil {
+		t.Error("expected error, got nil")
+	} else if !strings.Contains(err.Error(), "failed to kill process: mock kill error") {
+		t.Errorf("expected error containing 'failed to kill process: mock kill error', got: %v", err)
+	}
+
+	// Verify the PID file is preserved when termination fails
+	pidPath := getPIDFilePath()
+	if _, err := os.Stat(pidPath); os.IsNotExist(err) {
+		t.Errorf("PID file %s was deleted even though kill failed", pidPath)
+	}
+}
+
+func TestCancelScheduledAction_InterruptSucceeds(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	info := ScheduleInfo{
+		Action: ActionReboot,
+		PID:    9999, // Dummy PID
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	origFindProcessFunc := findProcessFunc
+	defer func() { findProcessFunc = origFindProcessFunc }()
+
+	// Mock findProcessFunc to return our mock process that succeeds on Signal(Interrupt)
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessWithSignalCheck{
+			signalErr: nil, // Interrupt succeeds
+			killErr:   fmt.Errorf("this should not be reached"),
+		}, nil
+	}
+
+	err := cancelScheduledAction()
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+
+func TestCancelScheduledAction_KillSucceeds(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	info := ScheduleInfo{
+		Action: ActionReboot,
+		PID:    9999, // Dummy PID
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	origFindProcessFunc := findProcessFunc
+	defer func() { findProcessFunc = origFindProcessFunc }()
+
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessWithSignalCheck{
+			signalErr: fmt.Errorf("interrupt failed"),
+			killErr:   nil, // Kill succeeds
+		}, nil
+	}
+
+	err := cancelScheduledAction()
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+
+func TestCancelScheduledAction_LookupFails(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	info := ScheduleInfo{
+		Action: ActionReboot,
+		PID:    9999, // Dummy PID
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	origFindProcessFunc := findProcessFunc
+	defer func() { findProcessFunc = origFindProcessFunc }()
+
+	callCount := 0
+	findProcessFunc = func(pid int) (processController, error) {
+		callCount++
+		if callCount == 1 {
+			// First call from processExists, must succeed
+			return &mockProcessWithSignalCheck{
+				signalZeroErr: nil,
+			}, nil
+		}
+		// Second call from cancelScheduledAction, must fail
+		return nil, fmt.Errorf("lookup failed")
+	}
+
+	err := cancelScheduledAction()
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	} else if !strings.Contains(err.Error(), "failed to find process: lookup failed") {
+		t.Fatalf("expected 'failed to find process: lookup failed', got: %v", err)
+	}
+}
+
+func TestCancelScheduledAction_ProcessNoLongerExists(t *testing.T) {
+	setupTestLogger()
+
+	originalOverride := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = originalOverride }()
+
+	info := ScheduleInfo{
+		Action: ActionReboot,
+		PID:    9999, // Dummy PID
+	}
+	if err := writePIDFile(info); err != nil {
+		t.Fatalf("failed to write test PID file: %v", err)
+	}
+	defer func() { _ = removePIDFile() }()
+
+	origFindProcessFunc := findProcessFunc
+	defer func() { findProcessFunc = origFindProcessFunc }()
+
+	// processExists will use this mock and send Signal(0). We want it to fail.
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessWithSignalCheck{
+			signalZeroErr: fmt.Errorf("os: process already finished"),
+			signalErr:     fmt.Errorf("os: process already finished"),
+		}, nil
+	}
+
+	err := cancelScheduledAction()
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	} else if !strings.Contains(err.Error(), "no active scheduled action found") {
+		t.Fatalf("expected 'no active scheduled action found', got: %v", err)
+	}
 }
