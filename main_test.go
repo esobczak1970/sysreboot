@@ -43,16 +43,19 @@ func setupTestLogger() *bytes.Buffer {
 
 // resetFlags resets all flags to their default values
 func resetFlags() {
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			*v = fd.defaultVal.(bool)
-		case *int:
-			*v = fd.defaultVal.(int)
-		case *string:
-			*v = fd.defaultVal.(string)
-		}
-	}
+	flagCancel = false
+	flagConfirm = false
+	flagConfirmTimeout = 10
+	flagDelay = 0
+	flagHalt = false
+	flagMessage = ""
+	flagPoweroff = false
+	flagReboot = true
+	flagShutdown = false
+	flagStatus = false
+	flagTime = ""
+	flagVerbose = false
+	flagVersion = false
 }
 
 func TestGetLogFileDirectory(t *testing.T) {
@@ -287,7 +290,7 @@ func TestConfirmAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set timeout
-			*appFlags[confirmTimeoutIndex].value.(*int) = tt.timeout
+			flagConfirmTimeout = tt.timeout
 
 			// Mock stdin
 			oldStdin := os.Stdin
@@ -392,40 +395,6 @@ func TestExecuteSystemCommandUnsupportedOS(t *testing.T) {
 	}
 }
 
-func TestGetFlagInt(t *testing.T) {
-	resetFlags()
-
-	tests := []struct {
-		name     string
-		index    int
-		setValue int
-		expected int
-	}{
-		{
-			name:     "Get confirmTimeoutIndex",
-			index:    confirmTimeoutIndex,
-			setValue: 15,
-			expected: 15,
-		},
-		{
-			name:     "Get delayIndex",
-			index:    delayIndex,
-			setValue: 30,
-			expected: 30,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			*appFlags[tt.index].value.(*int) = tt.setValue
-			result := getFlagInt(tt.index)
-			if result != tt.expected {
-				t.Errorf("getFlagInt(%d) = %d, want %d", tt.index, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestLogVerbose(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -451,7 +420,7 @@ func TestLogVerbose(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := setupTestLogger()
 			resetFlags()
-			*appFlags[verboseIndex].value.(*bool) = tt.verbose
+			flagVerbose = tt.verbose
 
 			// Capture stdout
 			oldStdout := os.Stdout
@@ -548,8 +517,8 @@ func TestExecuteAction(t *testing.T) {
 				t.Skip("Skipping actual system command execution")
 			}
 
-			*appFlags[confirmIndex].value.(*bool) = tt.confirmation
-			*appFlags[verboseIndex].value.(*bool) = true
+			flagConfirm = tt.confirmation
+			flagVerbose = true
 
 			if tt.confirmation && tt.confirmInput != "" {
 				oldStdin := os.Stdin
@@ -572,8 +541,8 @@ func TestExecuteActionCancelled(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[confirmIndex].value.(*bool) = true
-	*appFlags[confirmTimeoutIndex].value.(*int) = 1
+	flagConfirm = true
+	flagConfirmTimeout = 1
 
 	// Mock stdin with 'n' response
 	oldStdin := os.Stdin
@@ -673,7 +642,7 @@ func TestHandleDelay(t *testing.T) {
 			// Mock the actual execution to avoid system commands
 			t.Skip("Skipping actual system command execution")
 
-			*appFlags[delayIndex].value.(*int) = tt.delay
+			flagDelay = tt.delay
 			handleDelay(context.Background(), tt.delay, tt.action)
 		})
 	}
@@ -688,16 +657,7 @@ func TestMain_VersionFlag(t *testing.T) {
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	// Re-initialize flags for this test
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-		case *int:
-			flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-		case *string:
-			flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-		}
-	}
+	initFlags()
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -709,9 +669,9 @@ func TestMain_VersionFlag(t *testing.T) {
 
 	// This would call os.Exit, so we'll test the version flag separately
 	resetFlags()
-	*appFlags[versionIndex].value.(*bool) = true
+	flagVersion = true
 
-	if *appFlags[versionIndex].value.(*bool) {
+	if flagVersion {
 		fmt.Printf("%s version %s\n", appName, appVersion)
 	}
 
@@ -731,153 +691,13 @@ func TestMain_VersionFlag(t *testing.T) {
 	flag.CommandLine = oldCommandLine
 }
 
-func TestMain_ConflictingFlags(t *testing.T) {
-	setupTestLogger()
-	resetFlags()
-
-	tests := []struct {
-		name         string
-		setFlags     map[int]bool
-		expectAction string
-		expectError  bool
-	}{
-		{
-			name: "Reboot only (default)",
-			setFlags: map[int]bool{
-				rebootIndex: true,
-			},
-			expectAction: ActionReboot,
-			expectError:  false,
-		},
-		{
-			name: "Halt only",
-			setFlags: map[int]bool{
-				haltIndex:   true,
-				rebootIndex: false, // Need to turn off default
-			},
-			expectAction: ActionHalt,
-			expectError:  false,
-		},
-		{
-			name: "Poweroff only",
-			setFlags: map[int]bool{
-				poweroffIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectAction: ActionPoweroff,
-			expectError:  false,
-		},
-		{
-			name: "Shutdown only",
-			setFlags: map[int]bool{
-				shutdownIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectAction: ActionPoweroff,
-			expectError:  false,
-		},
-		{
-			name: "Halt and Poweroff (conflict)",
-			setFlags: map[int]bool{
-				haltIndex:     true,
-				poweroffIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectError: true,
-		},
-		{
-			name: "Reboot and Halt (conflict)",
-			setFlags: map[int]bool{
-				rebootIndex: true,
-				haltIndex:   true,
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags()
-
-			for idx, val := range tt.setFlags {
-				*appFlags[idx].value.(*bool) = val
-			}
-
-			action := ActionReboot
-			conflictingFlags := 0
-
-			if *appFlags[haltIndex].value.(*bool) {
-				action = ActionHalt
-				conflictingFlags++
-			}
-			if *appFlags[poweroffIndex].value.(*bool) {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if *appFlags[shutdownIndex].value.(*bool) {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if *appFlags[rebootIndex].value.(*bool) && conflictingFlags > 0 {
-				conflictingFlags++
-			}
-
-			hasConflict := conflictingFlags > 1
-
-			if tt.expectError != hasConflict {
-				t.Errorf("Conflict detection = %v, want %v", hasConflict, tt.expectError)
-			}
-
-			if !tt.expectError && action != tt.expectAction {
-				t.Errorf("Action = %v, want %v", action, tt.expectAction)
-			}
-		})
-	}
-}
-
-func TestAppFlagsIndexOrder(t *testing.T) {
-	// Verify that flag indices match appFlags order
-	expectedOrder := []string{
-		"cancel",
-		"confirm",
-		"confirm-timeout",
-		"delay",
-		ActionHalt,
-		"message",
-		ActionPoweroff,
-		ActionReboot,
-		"shutdown",
-		"status",
-		"time",
-		"verbose",
-		"version",
-	}
-
-	for i, expected := range expectedOrder {
-		if appFlags[i].longName != expected {
-			t.Errorf("appFlags[%d].longName = %s, want %s", i, appFlags[i].longName, expected)
-		}
-	}
-
-	// Verify index constants
-	if appFlags[confirmIndex].longName != "confirm" {
-		t.Error("confirmIndex does not match appFlags order")
-	}
-	if appFlags[rebootIndex].longName != ActionReboot {
-		t.Error("rebootIndex does not match appFlags order")
-	}
-	if appFlags[verboseIndex].longName != "verbose" {
-		t.Error("verboseIndex does not match appFlags order")
-	}
-}
-
 func TestSendWallMessageOnLinux(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("Skipping wall command test on non-Unix system")
 	}
 
 	setupTestLogger()
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 
 	// Test with a message (will likely fail without wall command, but tests the code path)
 	err := sendWallMessage("test message")
@@ -978,28 +798,6 @@ func TestInit(t *testing.T) {
 	}
 }
 
-func TestFlagDataTypes(t *testing.T) {
-	// Test all flag types are correctly set up
-	for i, fd := range appFlags {
-		switch fd.value.(type) {
-		case *bool, *int, *string:
-			// Valid types
-		default:
-			t.Errorf("appFlags[%d] has invalid type: %T", i, fd.value)
-		}
-
-		if fd.longName == "" {
-			t.Errorf("appFlags[%d] missing longName", i)
-		}
-		if fd.shortName == "" {
-			t.Errorf("appFlags[%d] missing shortName", i)
-		}
-		if fd.usage == "" {
-			t.Errorf("appFlags[%d] missing usage", i)
-		}
-	}
-}
-
 func TestConstants(t *testing.T) {
 	if appName != "sysreboot" {
 		t.Errorf("appName = %s, want sysreboot", appName)
@@ -1040,16 +838,7 @@ func TestMainFunction(t *testing.T) {
 		exited = false
 		pidFileDirOverride = t.TempDir()
 		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-		for _, fd := range appFlags {
-			switch v := fd.value.(type) {
-			case *bool:
-				flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-			case *int:
-				flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-			case *string:
-				flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-			}
-		}
+		initFlags()
 	}
 
 	t.Run("Version Flag", func(t *testing.T) {
@@ -1195,8 +984,8 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 	done := make(chan bool)
 	go func() {
 		// This will schedule but not complete
-		*appFlags[messageIndex].value.(*string) = "test"
-		*appFlags[confirmIndex].value.(*bool) = false
+		flagMessage = "test"
+		flagConfirm = false
 		handleScheduledTime(ctx, futureTime, ActionReboot)
 		done <- true
 	}()
@@ -1212,9 +1001,9 @@ func TestHandleDelaySuccess(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[messageIndex].value.(*string) = ""
-	*appFlags[confirmIndex].value.(*bool) = false
-	*appFlags[delayIndex].value.(*int) = 0
+	flagMessage = ""
+	flagConfirm = false
+	flagDelay = 0
 
 	// We can't actually test system commands, so we skip the execution part
 	// But we can verify the logic flow
@@ -1246,7 +1035,7 @@ func TestExecuteActionWithMessage(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 
 	// Test that sending a message doesn't panic (even if wall fails)
 	// We're testing the code path, not actual system changes
@@ -1281,7 +1070,7 @@ func TestSendWallMessageVerboseOff(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[verboseIndex].value.(*bool) = false
+	flagVerbose = false
 
 	err := sendWallMessage("test")
 	// May succeed or fail depending on system, both are acceptable
@@ -1409,8 +1198,8 @@ func TestExecuteActionWithConfirmation(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[confirmIndex].value.(*bool) = true
-	*appFlags[confirmTimeoutIndex].value.(*int) = 1
+	flagConfirm = true
+	flagConfirmTimeout = 1
 
 	// Mock stdin
 	oldStdin := os.Stdin
@@ -1436,8 +1225,8 @@ func TestHandleDelayWithDelay(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	// Can't test actual system commands, but we can test the delay logic
 	delay := 0 // Use 0 to avoid waiting
@@ -1459,8 +1248,8 @@ func TestHandleDelay_WithCancellation(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1498,8 +1287,8 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	errChan := make(chan struct{})
 	ctx := context.Background()
@@ -1581,14 +1370,14 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Test unsupported OS path
 		setupTestLogger()
-		*appFlags[verboseIndex].value.(*bool) = true
+		flagVerbose = true
 
 		err := sendWallMessage("test")
 		if err == nil {
 			t.Error("sendWallMessage should return error on Windows")
 		}
 
-		*appFlags[verboseIndex].value.(*bool) = false
+		flagVerbose = false
 		err = sendWallMessage("test")
 		if err == nil {
 			t.Error("sendWallMessage should return error on Windows")
@@ -1600,12 +1389,12 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 	setupTestLogger()
 
 	// Test with verbose on
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 	err := sendWallMessage("test verbose")
 	t.Logf("sendWallMessage with verbose=true: %v", err)
 
 	// Test with verbose off
-	*appFlags[verboseIndex].value.(*bool) = false
+	flagVerbose = false
 	err = sendWallMessage("test silent")
 	t.Logf("sendWallMessage with verbose=false: %v", err)
 }
@@ -1680,7 +1469,7 @@ func TestExecuteActionFullFlow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			*appFlags[verboseIndex].value.(*bool) = tt.verbose
+			flagVerbose = tt.verbose
 
 			// We can't actually execute system commands in tests
 			// but we can verify the logic paths work
@@ -1733,7 +1522,7 @@ func TestMain_ExitCodes(t *testing.T) {
 		// Do not actually exit so the test can continue
 	}
 
-	*appFlags[versionIndex].value.(*bool) = true
+	flagVersion = true
 	main()
 
 	if exitCode != 0 {
@@ -2296,7 +2085,7 @@ func TestExecuteActionIntegration(t *testing.T) {
 			_ = os.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 		}
 
-		*appFlags[verboseIndex].value.(*bool) = true
+		flagVerbose = true
 
 		// If MOCK_FAIL is 1, it will fail and os.Exit(1).
 		executeAction(ActionReboot, os.Getenv("TEST_MESSAGE"), false)
@@ -2367,4 +2156,155 @@ func TestExecuteActionIntegration(t *testing.T) {
 			t.Fatalf("expected success, got err: %v", err)
 		}
 	})
+}
+
+func TestDetermineAction(t *testing.T) {
+	// Simple test to avoid the reflection/indices used previously
+	tests := []struct {
+		name       string
+		halt       bool
+		poweroff   bool
+		shutdown   bool
+		reboot     bool
+		expected   string
+		expectExit bool
+	}{
+		{"default", false, false, false, true, ActionReboot, false},
+		{"halt", true, false, false, false, ActionHalt, false},
+		{"poweroff", false, true, false, false, ActionPoweroff, false},
+		{"shutdown", false, false, true, false, ActionPoweroff, false},
+		{"conflict", true, true, false, false, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags()
+			flagHalt = tt.halt
+			flagPoweroff = tt.poweroff
+			flagShutdown = tt.shutdown
+			flagReboot = tt.reboot
+
+			exitCalled := false
+			originalOsExit := osExit
+			osExit = func(code int) {
+				exitCalled = true
+			}
+			defer func() { osExit = originalOsExit }()
+
+			// Inline the action determination logic for the test
+			action := ActionReboot
+			conflictingFlags := 0
+			if flagHalt {
+				action = ActionHalt
+				conflictingFlags++
+			}
+			if flagPoweroff {
+				action = ActionPoweroff
+				conflictingFlags++
+			}
+			if flagShutdown {
+				action = ActionPoweroff
+				conflictingFlags++
+			}
+			if flagReboot && conflictingFlags > 0 {
+				conflictingFlags++
+			}
+
+			if conflictingFlags > 1 {
+				osExit(1)
+			}
+
+			if exitCalled != tt.expectExit {
+				t.Errorf("expected exit %v, got %v", tt.expectExit, exitCalled)
+			}
+			if !exitCalled && action != tt.expected {
+				t.Errorf("expected action %s, got %s", tt.expected, action)
+			}
+		})
+	}
+}
+
+func TestMain_ConflictingFlags(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupFlags  func()
+		expectError bool
+	}{
+		{
+			name: "No conflict (only reboot)",
+			setupFlags: func() {
+				flagReboot = true
+			},
+			expectError: false,
+		},
+		{
+			name: "Conflict (halt and poweroff)",
+			setupFlags: func() {
+				flagHalt = true
+				flagPoweroff = true
+			},
+			expectError: true,
+		},
+		{
+			name: "Conflict (halt, poweroff, and reboot)",
+			setupFlags: func() {
+				flagHalt = true
+				flagPoweroff = true
+				flagReboot = true
+			},
+			expectError: true,
+		},
+		{
+			name: "Alias check (shutdown)",
+			setupFlags: func() {
+				flagShutdown = true
+				flagReboot = false
+			},
+			expectError: false,
+		},
+		{
+			name: "Conflict (shutdown and halt)",
+			setupFlags: func() {
+				flagShutdown = true
+				flagHalt = true
+				flagReboot = false
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetFlags()
+			if tt.setupFlags != nil {
+				tt.setupFlags()
+			}
+
+			_ = ActionReboot
+			conflictingFlags := 0
+
+			if flagHalt {
+				conflictingFlags++
+			}
+			if flagPoweroff {
+				conflictingFlags++
+			}
+			if flagShutdown {
+				conflictingFlags++
+			}
+			if flagReboot && conflictingFlags > 0 {
+				conflictingFlags++
+			}
+
+			if tt.expectError {
+				if conflictingFlags <= 1 {
+					t.Errorf("Expected conflict but got none")
+				}
+			} else {
+				if conflictingFlags > 1 {
+					t.Errorf("Expected no conflict but got one")
+				}
+			}
+		})
+	}
 }
