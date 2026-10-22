@@ -87,6 +87,18 @@ var (
 	osExit    = os.Exit // Injectable exit function for testing
 )
 
+// processController exposes only the operations needed for cancellation.
+// The lookup seam allows tests to simulate signal and kill failures without
+// sending signals to a real process or changing standard library globals.
+type processController interface {
+	Signal(os.Signal) error
+	Kill() error
+}
+
+var findProcessFunc = func(pid int) (processController, error) {
+	return os.FindProcess(pid)
+}
+
 // Constants for PID file management
 const (
 	pidFileDir  = "/var/run" // Primary location for PID files (Unix)
@@ -466,7 +478,7 @@ func setupPIDFile(scheduleInfo ScheduleInfo) func() {
 func processExists(pid int) bool {
 	// On Unix systems, we can send signal 0 to check if process exists
 	if runtime.GOOS != "windows" {
-		process, err := os.FindProcess(pid)
+		process, err := findProcessFunc(pid)
 		if err != nil {
 			return false
 		}
@@ -476,7 +488,7 @@ func processExists(pid int) bool {
 
 	// On Windows, try to open the process
 	// This is a simplified check
-	process, err := os.FindProcess(pid)
+	process, err := findProcessFunc(pid)
 	return err == nil && process != nil
 }
 
@@ -496,14 +508,14 @@ func cancelScheduledAction() error {
 		return fmt.Errorf("no active scheduled action found (stale PID file removed)")
 	}
 
-	// Send SIGTERM to the process
-	process, err := os.FindProcess(info.PID)
+	// Send SIGINT to the process
+	process, err := findProcessFunc(info.PID)
 	if err != nil {
 		return fmt.Errorf("failed to find process: %v", err)
 	}
 
 	if err := process.Signal(os.Interrupt); err != nil {
-		// Try SIGKILL if SIGTERM fails
+		// Try SIGKILL if SIGINT fails
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process: %v", err)
 		}
