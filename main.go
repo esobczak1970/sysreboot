@@ -36,49 +36,22 @@ const (
 	ActionHalt     = "halt"
 )
 
-// Enumeration for index mapping of the flags (must match appFlags order)
-const (
-	cancelIndex = iota
-	confirmIndex
-	confirmTimeoutIndex
-	delayIndex
-	haltIndex
-	messageIndex
-	poweroffIndex
-	rebootIndex
-	shutdownIndex
-	statusIndex
-	timeIndex
-	verboseIndex
-	versionIndex
+// Command-line flags
+var (
+	flagCancel         bool
+	flagConfirm        bool
+	flagConfirmTimeout int
+	flagDelay          int
+	flagHalt           bool
+	flagMessage        string
+	flagPoweroff       bool
+	flagReboot         bool
+	flagShutdown       bool
+	flagStatus         bool
+	flagTime           string
+	flagVerbose        bool
+	flagVersion        bool
 )
-
-// flagData defines the structure for command-line flag information.
-type flagData struct {
-	longName   string      // Long form of the flag.
-	shortName  string      // Short form of the flag (single letter).
-	value      interface{} // Variable that stores the flag's value.
-	defaultVal interface{} // Default value of the flag.
-	usage      string      // Description of the flag.
-}
-
-// appFlags holds the configuration for all command-line flags.
-// IMPORTANT: Order must match the index constants above
-var appFlags = []flagData{
-	{"cancel", "x", new(bool), false, "Cancel a pending scheduled action."},
-	{"confirm", "c", new(bool), false, "Require confirmation before performing the action."},
-	{"confirm-timeout", "ct", new(int), 10, "Confirmation timeout in seconds."},
-	{"delay", "d", new(int), 0, "Delay in minutes before performing the action."},
-	{"halt", "h", new(bool), false, "Halt the machine."},
-	{"message", "m", new(string), "", "Message to send to all users before performing the action."},
-	{"poweroff", "p", new(bool), false, "Power-off the machine."},
-	{"reboot", "r", new(bool), true, "Reboot the machine (default action)."},
-	{"shutdown", "s", new(bool), false, "Shutdown the machine (alias for poweroff)."},
-	{"status", "st", new(bool), false, "Show status of pending scheduled actions."},
-	{"time", "t", new(string), "", "Specific time for the action in HH:MM format (24-hour)."},
-	{"verbose", "vb", new(bool), false, "Output more information."},
-	{"version", "v", new(bool), false, "Show application version."},
-}
 
 var (
 	logFile   string      // Path to the log file.
@@ -124,20 +97,44 @@ type ScheduleInfo struct {
 }
 
 func initFlags() {
-	// Initialize command-line flags based on appFlags configuration.
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-			flag.BoolVar(v, fd.shortName, fd.defaultVal.(bool), fd.usage+" (short form)")
-		case *int:
-			flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-			flag.IntVar(v, fd.shortName, fd.defaultVal.(int), fd.usage+" (short form)")
-		case *string:
-			flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-			flag.StringVar(v, fd.shortName, fd.defaultVal.(string), fd.usage+" (short form)")
-		}
-	}
+	flag.BoolVar(&flagCancel, "cancel", false, "Cancel a pending scheduled action.")
+	flag.BoolVar(&flagCancel, "x", false, "Cancel a pending scheduled action. (short form)")
+
+	flag.BoolVar(&flagConfirm, "confirm", false, "Require confirmation before performing the action.")
+	flag.BoolVar(&flagConfirm, "c", false, "Require confirmation before performing the action. (short form)")
+
+	flag.IntVar(&flagConfirmTimeout, "confirm-timeout", 10, "Confirmation timeout in seconds.")
+	flag.IntVar(&flagConfirmTimeout, "ct", 10, "Confirmation timeout in seconds. (short form)")
+
+	flag.IntVar(&flagDelay, "delay", 0, "Delay in minutes before performing the action.")
+	flag.IntVar(&flagDelay, "d", 0, "Delay in minutes before performing the action. (short form)")
+
+	flag.BoolVar(&flagHalt, "halt", false, "Halt the machine.")
+	flag.BoolVar(&flagHalt, "h", false, "Halt the machine. (short form)")
+
+	flag.StringVar(&flagMessage, "message", "", "Message to send to all users before performing the action.")
+	flag.StringVar(&flagMessage, "m", "", "Message to send to all users before performing the action. (short form)")
+
+	flag.BoolVar(&flagPoweroff, "poweroff", false, "Power-off the machine.")
+	flag.BoolVar(&flagPoweroff, "p", false, "Power-off the machine. (short form)")
+
+	flag.BoolVar(&flagReboot, "reboot", true, "Reboot the machine (default action).")
+	flag.BoolVar(&flagReboot, "r", true, "Reboot the machine (default action). (short form)")
+
+	flag.BoolVar(&flagShutdown, "shutdown", false, "Shutdown the machine (alias for poweroff).")
+	flag.BoolVar(&flagShutdown, "s", false, "Shutdown the machine (alias for poweroff). (short form)")
+
+	flag.BoolVar(&flagStatus, "status", false, "Show status of pending scheduled actions.")
+	flag.BoolVar(&flagStatus, "st", false, "Show status of pending scheduled actions. (short form)")
+
+	flag.StringVar(&flagTime, "time", "", "Specific time for the action in HH:MM format (24-hour).")
+	flag.StringVar(&flagTime, "t", "", "Specific time for the action in HH:MM format (24-hour). (short form)")
+
+	flag.BoolVar(&flagVerbose, "verbose", false, "Output more information.")
+	flag.BoolVar(&flagVerbose, "vb", false, "Output more information. (short form)")
+
+	flag.BoolVar(&flagVersion, "version", false, "Show application version.")
+	flag.BoolVar(&flagVersion, "v", false, "Show application version. (short form)")
 }
 
 func init() {
@@ -273,7 +270,7 @@ func executeAction(action string, message string, confirmation bool) {
 func confirmAction() bool {
 	// Prompt the user for confirmation before proceeding with an action.
 	fmt.Print("Are you sure you want to proceed with the action? (y/n): ")
-	timeout := getFlagInt(confirmTimeoutIndex)
+	timeout := flagConfirmTimeout
 	timer := time.NewTimer(time.Duration(timeout) * time.Second)
 	responseChan := make(chan string, 1)
 
@@ -354,14 +351,9 @@ func executeSystemCommand(action string) error {
 	return nil
 }
 
-func getFlagInt(index int) int {
-	// Retrieve an integer value from the appFlags based on the index.
-	return *(appFlags[index].value.(*int))
-}
-
 func logVerbose(message string) {
 	// Log a message if verbose output is enabled.
-	if *(appFlags[verboseIndex].value.(*bool)) {
+	if flagVerbose {
 		logger.Println(message)
 		fmt.Println(message)
 	}
@@ -579,7 +571,7 @@ func main() {
 	flag.Parse()
 
 	// Display version information if the version flag is set and exit.
-	if *appFlags[versionIndex].value.(*bool) {
+	if flagVersion {
 		fmt.Printf("%s version %s\n", appName, appVersion)
 		osExit(0)
 		return
@@ -589,7 +581,7 @@ func main() {
 	defer cleanup()
 
 	// Handle status flag
-	if *appFlags[statusIndex].value.(*bool) {
+	if flagStatus {
 		if err := showScheduleStatus(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			osExit(1)
@@ -600,7 +592,7 @@ func main() {
 	}
 
 	// Handle cancel flag
-	if *appFlags[cancelIndex].value.(*bool) {
+	if flagCancel {
 		if err := cancelScheduledAction(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			osExit(1)
@@ -614,19 +606,19 @@ func main() {
 	action := ActionReboot // Default action is to reboot.
 	conflictingFlags := 0
 
-	if *(appFlags[haltIndex].value.(*bool)) {
+	if flagHalt {
 		action = ActionHalt
 		conflictingFlags++
 	}
-	if *(appFlags[poweroffIndex].value.(*bool)) {
+	if flagPoweroff {
 		action = ActionPoweroff
 		conflictingFlags++
 	}
-	if *(appFlags[shutdownIndex].value.(*bool)) {
+	if flagShutdown {
 		action = ActionPoweroff
 		conflictingFlags++
 	}
-	if *(appFlags[rebootIndex].value.(*bool)) && conflictingFlags > 0 {
+	if flagReboot && conflictingFlags > 0 {
 		conflictingFlags++
 	}
 
@@ -648,19 +640,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if *(appFlags[timeIndex].value.(*string)) != "" {
-		handleScheduledTime(ctx, *(appFlags[timeIndex].value.(*string)), action)
+	if flagTime != "" {
+		handleScheduledTime(ctx, flagTime, action)
 		return
 	}
 
 	// Proceed with a delayed action if a delay is specified.
-	handleDelay(ctx, *(appFlags[delayIndex].value.(*int)), action)
+	handleDelay(ctx, flagDelay, action)
 }
 
 // handleScheduledTime schedules an action at a specific time.
 func handleScheduledTime(ctx context.Context, timeStr, action string) {
-	message := *(appFlags[messageIndex].value.(*string))
-	confirmation := *(appFlags[confirmIndex].value.(*bool))
+	message := flagMessage
+	confirmation := flagConfirm
 
 	// Write PID file for scheduled action
 	scheduleInfo := ScheduleInfo{
@@ -681,8 +673,8 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 
 // handleDelay sets a delay before executing an action.
 func handleDelay(ctx context.Context, delay int, action string) {
-	message := *(appFlags[messageIndex].value.(*string))
-	confirmation := *(appFlags[confirmIndex].value.(*bool))
+	message := flagMessage
+	confirmation := flagConfirm
 
 	// Log and wait if a delay is set, then execute the action.
 	if delay > 0 {
