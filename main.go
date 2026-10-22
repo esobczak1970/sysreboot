@@ -60,6 +60,18 @@ var (
 	osExit    = os.Exit // Injectable exit function for testing
 )
 
+// processController exposes only the operations needed for cancellation.
+// The lookup seam allows tests to simulate signal and kill failures without
+// sending signals to a real process or changing standard library globals.
+type processController interface {
+	Signal(os.Signal) error
+	Kill() error
+}
+
+var findProcessFunc = func(pid int) (processController, error) {
+	return os.FindProcess(pid)
+}
+
 // Constants for PID file management
 const (
 	pidFileDir  = "/var/run" // Primary location for PID files (Unix)
@@ -135,7 +147,7 @@ func init() {
 func initLogger() {
 	// Set up the log file location and initialize the logger.
 	logFile = filepath.Join(getLogFileDirectory(), appName+".log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatalf("Error opening log file: %v", err)
 	}
@@ -195,25 +207,17 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	// Set up signal handling for cancellation
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	// Wait for either the scheduled time or a signal
 	timer := time.NewTimer(durationUntilReboot)
 	select {
 	case <-timer.C:
 		// Time reached, proceed with action
 		executeAction(action, message, confirmation)
-	case sig := <-sigChan:
-		// Signal received, cancel action
-		timer.Stop()
-		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-		return nil
 	case <-ctx.Done():
-		// Context cancelled
+		// Context cancelled or signal received
 		timer.Stop()
+		fmt.Printf("\nCancelling scheduled action.\n")
+		logger.Printf("Cancelled %s action due to context cancellation\n", action)
 		return nil
 	}
 
@@ -302,16 +306,19 @@ func executeSystemCommand(action string) error {
 	// Execute the system command associated with the specified action.
 	var cmd *exec.Cmd
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	switch runtime.GOOS {
 	case "linux":
 		// Use systemctl for modern Linux systems
-		cmd = exec.Command("systemctl", action)
+		cmd = exec.CommandContext(ctx, "systemctl", action)
 	case "windows":
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "/r", "/t", "0")
+			cmd = exec.CommandContext(ctx, "shutdown", "/r", "/t", "0")
 		case ActionPoweroff, ActionHalt:
-			cmd = exec.Command("shutdown", "/s", "/t", "0")
+			cmd = exec.CommandContext(ctx, "shutdown", "/s", "/t", "0")
 		default:
 			return fmt.Errorf("unsupported action for Windows: %s", action)
 		}
@@ -323,22 +330,17 @@ func executeSystemCommand(action string) error {
 
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "-r", "now")
+			cmd = exec.CommandContext(ctx, "shutdown", "-r", "now")
 		case ActionPoweroff:
-			cmd = exec.Command("shutdown", "-h", "now")
+			cmd = exec.CommandContext(ctx, "shutdown", "-h", "now")
 		case ActionHalt:
-			cmd = exec.Command("halt")
+			cmd = exec.CommandContext(ctx, "halt")
 		default:
 			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
 	default:
 		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -468,7 +470,7 @@ func setupPIDFile(scheduleInfo ScheduleInfo) func() {
 func processExists(pid int) bool {
 	// On Unix systems, we can send signal 0 to check if process exists
 	if runtime.GOOS != "windows" {
-		process, err := os.FindProcess(pid)
+		process, err := findProcessFunc(pid)
 		if err != nil {
 			return false
 		}
@@ -478,7 +480,7 @@ func processExists(pid int) bool {
 
 	// On Windows, try to open the process
 	// This is a simplified check
-	process, err := os.FindProcess(pid)
+	process, err := findProcessFunc(pid)
 	return err == nil && process != nil
 }
 
@@ -498,14 +500,14 @@ func cancelScheduledAction() error {
 		return fmt.Errorf("no active scheduled action found (stale PID file removed)")
 	}
 
-	// Send SIGTERM to the process
-	process, err := os.FindProcess(info.PID)
+	// Send SIGINT to the process
+	process, err := findProcessFunc(info.PID)
 	if err != nil {
 		return fmt.Errorf("failed to find process: %v", err)
 	}
 
 	if err := process.Signal(os.Interrupt); err != nil {
-		// Try SIGKILL if SIGTERM fails
+		// Try SIGKILL if SIGINT fails
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process: %v", err)
 		}
@@ -565,9 +567,6 @@ func cleanup() {
 }
 
 func main() {
-	initLogger()
-	defer cleanup()
-
 	// Parse the command-line flags.
 	flag.Parse()
 
@@ -577,6 +576,9 @@ func main() {
 		osExit(0)
 		return
 	}
+
+	initLogger()
+	defer cleanup()
 
 	// Handle status flag
 	if flagStatus {
@@ -597,14 +599,6 @@ func main() {
 			return
 		}
 		osExit(0)
-		return
-	}
-
-	// Validate that user has appropriate privileges on Unix systems
-	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
-		logger.Println("Attempted to run without root privileges.")
-		osExit(1)
 		return
 	}
 
@@ -634,8 +628,18 @@ func main() {
 		return
 	}
 
+	// Validate that user has appropriate privileges on Unix systems
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		fmt.Fprintf(os.Stderr, "Error: Root privileges required. Please run with sudo.\n")
+		logger.Println("Attempted to run without root privileges.")
+		osExit(1)
+		return
+	}
+
 	// Handle scheduled time if provided.
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	if flagTime != "" {
 		handleScheduledTime(ctx, flagTime, action)
 		return
@@ -683,10 +687,6 @@ func handleDelay(ctx context.Context, delay int, action string) {
 
 		defer setupPIDFile(scheduleInfo)()
 
-		// Set up signal handling for cancellation
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
@@ -696,15 +696,11 @@ func handleDelay(ctx context.Context, delay int, action string) {
 		select {
 		case <-timer.C:
 			// Delay completed, proceed with action
-		case sig := <-sigChan:
-			// Signal received, cancel action
-			timer.Stop()
-			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-			return
 		case <-ctx.Done():
-			// Context cancelled
+			// Context cancelled or signal received
 			timer.Stop()
+			fmt.Printf("\nCancelling scheduled action.\n")
+			logger.Printf("Cancelled %s action due to context cancellation\n", action)
 			return
 		}
 	}

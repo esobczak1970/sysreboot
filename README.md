@@ -6,7 +6,7 @@ Detailed usage notes are also available in [\`docs/README.md\`](docs/README.md).
 
 ## Requirements
 
-- Go 1.27.2 (required).
+- Go 1.27.3 (required).
 - Appropriate operating-system privileges for reboot, shutdown, or halt operations.
 - Unix-specific features such as \`wall\` are only available on supported Unix-like systems.
 
@@ -29,6 +29,9 @@ Examples:
 \`\`\`
 
 The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges.
+
+Help and version commands run without opening the user log. Tests isolate user
+logs and never execute real reboot or shutdown actions.
 
 ## Development
 

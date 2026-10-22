@@ -95,7 +95,7 @@ same change.
 
 **Project:** sysreboot
 
-**Primary stack:** Go 1.27.1 system utility
+**Primary stack:** Go 1.27.3 system utility
 
 - This utility can perform destructive system actions. Preserve explicit safety,
   confirmation, cancellation, privilege checks, and actionable errors.

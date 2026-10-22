@@ -20,6 +20,37 @@ import (
 
 // TestMain handles test setup and teardown
 func TestMain(m *testing.M) {
+	if logWriter != nil {
+		fmt.Fprintln(os.Stderr, "package initialization opened a user log")
+		os.Exit(1)
+	}
+	logger = log.New(io.Discard, appName+": ", log.LstdFlags)
+
+	// Default command failures must be simulated, even when tests run as root.
+	commandDir, err := os.MkdirTemp("", "sysreboot-test-commands-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	for _, command := range []string{"systemctl", "shutdown", "halt", "wall"} {
+		script := "#!/bin/sh\nexit 1\n"
+		if runtime.GOOS == "windows" {
+			command += ".bat"
+			script = "@exit /b 1\r\n"
+		}
+		if err := os.WriteFile(filepath.Join(commandDir, command), []byte(script), 0700); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			_ = os.RemoveAll(commandDir)
+			os.Exit(1)
+		}
+	}
+	originalPath := os.Getenv("PATH")
+	if err := os.Setenv("PATH", commandDir+string(os.PathListSeparator)+originalPath); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.RemoveAll(commandDir)
+		os.Exit(1)
+	}
+
 	// Save original values
 	originalLogWriter := logWriter
 	originalLogger := logger
@@ -30,6 +61,8 @@ func TestMain(m *testing.M) {
 	// Restore original values
 	logWriter = originalLogWriter
 	logger = originalLogger
+	_ = os.Setenv("PATH", originalPath)
+	_ = os.RemoveAll(commandDir)
 
 	os.Exit(code)
 }
@@ -808,7 +841,28 @@ func TestConstants(t *testing.T) {
 }
 
 // TestMainFunction tests main function logic without running actual os.Exit
+func TestMain_ConflictingFlagsBranch(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+
+	flagHalt = true
+	flagPoweroff = true
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
+	}
+}
+
 func TestMainFunction(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 
 	// Mock osExit
@@ -944,11 +998,6 @@ func TestMainFunction(t *testing.T) {
 	})
 
 	t.Run("Conflicting flags", func(t *testing.T) {
-		// Mock root access for this test if on unix so we don't fail early
-		if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-			t.Skip("Skipping conflicting flags test as it requires root on unix to pass privilege check")
-		}
-
 		setupSubTest()
 		os.Args = []string{"sysreboot", "--reboot", "--halt"}
 
@@ -1291,13 +1340,11 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 	flagConfirm = false
 
 	errChan := make(chan struct{})
-	ctx := context.Background()
 
-	// Ignore os.Interrupt globally so that if the signal is sent slightly before
-	// handleDelay registers its own signal handler, it won't crash the test suite.
-	// We restore the default behavior when the test finishes.
-	signal.Ignore(os.Interrupt)
-	defer signal.Reset(os.Interrupt)
+	// HandleDelay no longer manages signal processing internally;
+	// it relies on the provided context being canceled (e.g. via signal.NotifyContext)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	go func() {
 		// Delay > 0 will create PID file and block on timer
@@ -1305,7 +1352,7 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 		close(errChan)
 	}()
 
-	// Ensure the handleDelay had time to start and write PID file / register signal.Notify
+	// Ensure the handleDelay had time to start and write PID file
 	time.Sleep(100 * time.Millisecond)
 
 	// Inject signal
@@ -1510,6 +1557,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 
 // TestMain_ExitCodes tests that main exits correctly
 func TestMain_ExitCodes(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -1616,16 +1664,30 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	}
 }
 
-// TestInitLoggerCreation verifies logger is created
+// TestInitLoggerCreation verifies logging uses the selected user directory.
 func TestInitLoggerCreation(t *testing.T) {
-	// Logger should always be initialized by init()
-	if logger == nil {
-		t.Error("init() did not create logger")
-	}
+	isolateUserLog(t)
+	originalLogger, originalWriter, originalFile := logger, logWriter, logFile
+	t.Cleanup(func() {
+		cleanup()
+		logger, logWriter, logFile = originalLogger, originalWriter, originalFile
+	})
 
-	// logWriter may be nil after cleanup in TestMain, which is OK
-	// We just verify it was set up initially
-	t.Log("Logger was properly initialized by init()")
+	initLogger()
+	if logger == nil || logWriter == nil {
+		t.Fatal("initLogger did not create the logger and file writer")
+	}
+	if want := filepath.Join(getLogFileDirectory(), appName+".log"); logFile != want {
+		t.Fatalf("log file = %q, want %q", logFile, want)
+	}
+	logger.Print("isolated logger test")
+	contents, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "isolated logger test") {
+		t.Fatalf("logger did not write to its selected file: %s", contents)
+	}
 }
 
 // TestMainWithNonRootUnix tests main's privilege check
@@ -2158,152 +2220,56 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 }
 
-func TestDetermineAction(t *testing.T) {
-	// Simple test to avoid the reflection/indices used previously
-	tests := []struct {
-		name       string
-		halt       bool
-		poweroff   bool
-		shutdown   bool
-		reboot     bool
-		expected   string
-		expectExit bool
-	}{
-		{"default", false, false, false, true, ActionReboot, false},
-		{"halt", true, false, false, false, ActionHalt, false},
-		{"poweroff", false, true, false, false, ActionPoweroff, false},
-		{"shutdown", false, false, true, false, ActionPoweroff, false},
-		{"conflict", true, true, false, false, "", true},
+// TestGetLogFileDirectoryUserHomeDirError tests the fallback of UserHomeDir
+func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping UserHomeDir test on Windows")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags()
-			flagHalt = tt.halt
-			flagPoweroff = tt.poweroff
-			flagShutdown = tt.shutdown
-			flagReboot = tt.reboot
+	// t.Setenv safely restores the environment variable when the test completes
+	// even if the value was originally unset.
+	t.Setenv("HOME", "")
 
-			exitCalled := false
-			originalOsExit := osExit
-			osExit = func(code int) {
-				exitCalled = true
-			}
-			defer func() { osExit = originalOsExit }()
-
-			// Inline the action determination logic for the test
-			action := ActionReboot
-			conflictingFlags := 0
-			if flagHalt {
-				action = ActionHalt
-				conflictingFlags++
-			}
-			if flagPoweroff {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if flagShutdown {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if flagReboot && conflictingFlags > 0 {
-				conflictingFlags++
-			}
-
-			if conflictingFlags > 1 {
-				osExit(1)
-			}
-
-			if exitCalled != tt.expectExit {
-				t.Errorf("expected exit %v, got %v", tt.expectExit, exitCalled)
-			}
-			if !exitCalled && action != tt.expected {
-				t.Errorf("expected action %s, got %s", tt.expected, action)
-			}
-		})
+	dir := getLogFileDirectory()
+	if dir != "." {
+		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
 	}
 }
 
-func TestMain_ConflictingFlags(t *testing.T) {
-	tests := []struct {
-		name        string
-		setupFlags  func()
-		expectError bool
-	}{
-		{
-			name: "No conflict (only reboot)",
-			setupFlags: func() {
-				flagReboot = true
-			},
-			expectError: false,
-		},
-		{
-			name: "Conflict (halt and poweroff)",
-			setupFlags: func() {
-				flagHalt = true
-				flagPoweroff = true
-			},
-			expectError: true,
-		},
-		{
-			name: "Conflict (halt, poweroff, and reboot)",
-			setupFlags: func() {
-				flagHalt = true
-				flagPoweroff = true
-				flagReboot = true
-			},
-			expectError: true,
-		},
-		{
-			name: "Alias check (shutdown)",
-			setupFlags: func() {
-				flagShutdown = true
-				flagReboot = false
-			},
-			expectError: false,
-		},
-		{
-			name: "Conflict (shutdown and halt)",
-			setupFlags: func() {
-				flagShutdown = true
-				flagHalt = true
-				flagReboot = false
-			},
-			expectError: true,
-		},
+// isolateUserLog keeps main-path tests from creating or modifying a user log.
+func isolateUserLog(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", t.TempDir())
+	} else {
+		t.Setenv("HOME", t.TempDir())
+	}
+}
+
+func TestMetadataCommandsDoNotNeedLogDirectory(t *testing.T) {
+	if argument := os.Getenv("SYSREBOOT_METADATA_ARGUMENT"); argument == "--help" || argument == "--version" {
+		flag.CommandLine = flag.NewFlagSet("sysreboot", flag.ExitOnError)
+		initFlags()
+		flag.Usage = customUsage
+		os.Args = []string{"sysreboot", argument}
+		main()
+		return
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags()
-			if tt.setupFlags != nil {
-				tt.setupFlags()
+	for _, argument := range []string{"--help", "--version"} {
+		t.Run(argument, func(t *testing.T) {
+			missingDirectory := filepath.Join(t.TempDir(), "missing")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMetadataCommandsDoNotNeedLogDirectory$")
+			cmd.Env = append(os.Environ(), "SYSREBOOT_METADATA_ARGUMENT="+argument, "HOME="+missingDirectory, "APPDATA="+missingDirectory)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s failed without a writable log directory: %v\n%s", argument, err, output)
 			}
-
-			_ = ActionReboot
-			conflictingFlags := 0
-
-			if flagHalt {
-				conflictingFlags++
+			if !strings.Contains(string(output), appName) {
+				t.Fatalf("%s did not print metadata: %s", argument, output)
 			}
-			if flagPoweroff {
-				conflictingFlags++
-			}
-			if flagShutdown {
-				conflictingFlags++
-			}
-			if flagReboot && conflictingFlags > 0 {
-				conflictingFlags++
-			}
-
-			if tt.expectError {
-				if conflictingFlags <= 1 {
-					t.Errorf("Expected conflict but got none")
-				}
-			} else {
-				if conflictingFlags > 1 {
-					t.Errorf("Expected no conflict but got one")
-				}
+			if _, err := os.Stat(missingDirectory); !os.IsNotExist(err) {
+				t.Fatalf("%s unexpectedly touched the log directory: %v", argument, err)
 			}
 		})
 	}
