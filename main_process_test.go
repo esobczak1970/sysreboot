@@ -142,6 +142,25 @@ func TestCancelScheduledAction_ProcessFailures(t *testing.T) {
 				t.Errorf("Kill call count = %d, want %d", process.killCalls, tc.wantKillCalls)
 			}
 
+			// Verify the same signal sequence used in production: an existence
+			// probe on Unix, then SIGINT only when the second lookup succeeds.
+			wantSignals := 0
+			if runtime.GOOS != "windows" {
+				wantSignals++
+				if len(process.signals) > 0 && process.signals[0] != syscall.Signal(0) {
+					t.Errorf("first signal = %v, want signal 0", process.signals[0])
+				}
+			}
+			if tc.exists && tc.lookupErr == nil {
+				wantSignals++
+				if len(process.signals) > 0 && process.signals[len(process.signals)-1] != os.Interrupt {
+					t.Errorf("last signal = %v, want interrupt", process.signals[len(process.signals)-1])
+				}
+			}
+			if got := len(process.signals); got != wantSignals {
+				t.Errorf("signal count = %d, want %d", got, wantSignals)
+			}
+
 			_, statErr := os.Stat(getPIDFilePath())
 			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 				t.Fatalf("stat PID file: %v", statErr)
