@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1827,10 +1828,16 @@ func TestCancelScheduledAction_ActiveAction(t *testing.T) {
 	}
 	defer func() { _ = removePIDFile() }()
 
-	// Ignore SIGINT so cancelScheduledAction doesn't kill the test process
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	defer signal.Stop(c)
+	// Exercise the production cancellation path without signaling the test runner.
+	process := &cancellationTestProcess{exists: true}
+	originalLookup := findProcessFunc
+	findProcessFunc = func(pid int) (processController, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("unexpected PID %d", pid)
+		}
+		return process, nil
+	}
+	t.Cleanup(func() { findProcessFunc = originalLookup })
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -1846,6 +1853,9 @@ func TestCancelScheduledAction_ActiveAction(t *testing.T) {
 		t.Errorf("cancelScheduledAction returned error: %v", err)
 	}
 
+	if !slices.Contains(process.signals, os.Interrupt) {
+		t.Error("cancellation did not request SIGINT")
+	}
 	// Verify PID file is gone
 	pidPath := getPIDFilePath()
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
