@@ -80,11 +80,17 @@ var appFlags = []flagData{
 	{"version", "v", new(bool), false, "Show application version."},
 }
 
+// ExecFunc is a type for executing commands, allowing injection for testing
+type ExecFunc func(ctx context.Context, name string, arg ...string) *exec.Cmd
+
 var (
 	logFile   string      // Path to the log file.
 	logger    *log.Logger // Logger instance for the application.
 	logWriter io.WriteCloser
 	osExit    = os.Exit // Injectable exit function for testing
+
+	// Injectable execution function for tests to prevent modifying production behavior
+	execCmdFunc = exec.CommandContext
 )
 
 // Constants for PID file management
@@ -223,6 +229,40 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	return nil
 }
 
+// resolveExecutable returns the absolute path to a trusted executable
+func resolveExecutable(name string) (string, error) {
+	var searchPaths []string
+
+	switch name {
+	case "systemctl":
+		searchPaths = []string{"/usr/bin/systemctl", "/bin/systemctl"}
+	case "shutdown":
+		if runtime.GOOS == "windows" {
+			sysDir := os.Getenv("SystemRoot")
+			if sysDir == "" {
+				sysDir = `C:\Windows`
+			}
+			searchPaths = []string{filepath.Join(sysDir, "System32", "shutdown.exe")}
+		} else {
+			searchPaths = []string{"/sbin/shutdown", "/usr/sbin/shutdown"}
+		}
+	case "halt":
+		searchPaths = []string{"/sbin/halt", "/usr/sbin/halt"}
+	case "wall":
+		searchPaths = []string{"/usr/bin/wall", "/bin/wall"}
+	default:
+		return "", fmt.Errorf("untrusted executable: %s", name)
+	}
+
+	for _, p := range searchPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("executable not found in trusted locations: %s", name)
+}
+
 func sendWallMessage(message string) error {
 	// Send a message to all users on the system using the 'wall' command (Unix-like systems only).
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
@@ -230,12 +270,20 @@ func sendWallMessage(message string) error {
 		return fmt.Errorf("wall not supported on %s", runtime.GOOS)
 	}
 
+	wallPath, err := resolveExecutable("wall")
+	if err != nil {
+		logger.Printf("Warning: failed to resolve wall command: %v", err)
+		return err
+	}
+
 	logVerbose("Sending wall message: " + message)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "wall", message)
+	cmd := execCmdFunc(ctx, wallPath, message)
+	// Do not inherit untrusted environment variables for high-privilege execution
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
 	if err := cmd.Run(); err != nil {
 		logger.Printf("Failed to send wall message: %v\n", err)
 		return err
@@ -303,18 +351,22 @@ func confirmAction() bool {
 
 func executeSystemCommand(action string) error {
 	// Execute the system command associated with the specified action.
-	var cmd *exec.Cmd
+	var cmdName string
+	var cmdArgs []string
 
 	switch runtime.GOOS {
 	case "linux":
 		// Use systemctl for modern Linux systems
-		cmd = exec.Command("systemctl", action)
+		cmdName = "systemctl"
+		cmdArgs = []string{action}
 	case "windows":
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "/r", "/t", "0")
+			cmdName = "shutdown"
+			cmdArgs = []string{"/r", "/t", "0"}
 		case ActionPoweroff, ActionHalt:
-			cmd = exec.Command("shutdown", "/s", "/t", "0")
+			cmdName = "shutdown"
+			cmdArgs = []string{"/s", "/t", "0"}
 		default:
 			return fmt.Errorf("unsupported action for Windows: %s", action)
 		}
@@ -326,11 +378,15 @@ func executeSystemCommand(action string) error {
 
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "-r", "now")
+			cmdName = "shutdown"
+			cmdArgs = []string{"-r", "now"}
 		case ActionPoweroff:
-			cmd = exec.Command("shutdown", "-h", "now")
+			cmdName = "shutdown"
+			cmdArgs = []string{"-h", "now"}
 		case ActionHalt:
-			cmd = exec.Command("halt")
+			cmdName = "halt"
+			// macOS halt takes no arguments for immediate halt typically, but keeping parity
+			cmdArgs = []string{}
 		default:
 			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
@@ -338,10 +394,24 @@ func executeSystemCommand(action string) error {
 		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
 	}
 
+	execPath, err := resolveExecutable(cmdName)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	cmd := execCmdFunc(ctx, execPath, cmdArgs...)
+	// Do not inherit untrusted environment variables for high-privilege execution
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+
+	if runtime.GOOS == "windows" {
+		sysDir := os.Getenv("SystemRoot")
+		if sysDir != "" {
+			cmd.Env = append(cmd.Env, "SystemRoot="+sysDir)
+		}
+	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {

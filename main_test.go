@@ -1795,6 +1795,17 @@ func TestReadPIDFile_IsDirError(t *testing.T) {
 func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	setupTestLogger()
 
+	// Capture execution paths
+	var executedPaths []string
+	originalExecCmdFunc := execCmdFunc
+	execCmdFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+		executedPaths = append(executedPaths, name)
+
+		// Return a harmless command that exits successfully
+		return exec.CommandContext(ctx, "echo", "mocked")
+	}
+	defer func() { execCmdFunc = originalExecCmdFunc }()
+
 	switch runtime.GOOS {
 	case "linux":
 		// Test all systemctl actions
@@ -1802,6 +1813,12 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 			err := executeSystemCommand(action)
 			if err != nil {
 				t.Logf("Linux: executeSystemCommand(%s) = %v", action, err)
+			}
+		}
+
+		for _, p := range executedPaths {
+			if !strings.HasSuffix(p, "systemctl") || (!strings.HasPrefix(p, "/bin/") && !strings.HasPrefix(p, "/usr/bin/")) {
+				t.Errorf("expected absolute path to systemctl, got %s", p)
 			}
 		}
 	case "windows":
@@ -1812,8 +1829,15 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 				t.Logf("Windows: executeSystemCommand(%s) = %v", action, err)
 			}
 		}
+
+		for _, p := range executedPaths {
+			if !strings.HasSuffix(p, "shutdown.exe") {
+				t.Errorf("expected absolute path to shutdown.exe, got %s", p)
+			}
+		}
 	case "darwin":
-		// Test all macOS actions
+		// macOS tests might fail before execCmdFunc due to the root privilege check.
+		// So we won't assert executedPaths if not root.
 		if os.Geteuid() != 0 {
 			for _, action := range []string{ActionReboot, ActionPoweroff, ActionHalt} {
 				err := executeSystemCommand(action)
@@ -2291,46 +2315,38 @@ func TestExecuteActionIntegration(t *testing.T) {
 
 	// This block runs when executed as a subprocess by the test itself
 	if os.Getenv("TEST_EXECUTE_ACTION_INTEGRATION") == "1" {
-		mockDir := os.Getenv("MOCK_BIN_DIR")
-		if mockDir != "" {
-			_ = os.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-		}
-
 		*appFlags[verboseIndex].value.(*bool) = true
 
-		// If MOCK_FAIL is 1, it will fail and os.Exit(1).
+		// Use our injectable command executor for tests
+		execCmdFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+			// Find the mock script for this command name
+			mockFail := os.Getenv("MOCK_FAIL") == "1"
+			mockWallFail := os.Getenv("MOCK_WALL_FAIL") == "1"
+
+			// We can determine what to execute based on name
+			cmdPath := os.Args[0]
+			cmdArgs := []string{"-test.run=TestMockExecProcess"}
+
+			if strings.Contains(name, "wall") && mockWallFail {
+				cmdArgs = append(cmdArgs, "-mock-fail=1")
+			} else if mockFail && !strings.Contains(name, "wall") { // Only fail the main action, not wall
+				cmdArgs = append(cmdArgs, "-mock-fail=1")
+			}
+
+			cmd := exec.CommandContext(ctx, cmdPath, cmdArgs...)
+			cmd.Env = append(os.Environ(), "TEST_IS_MOCK_PROCESS=1")
+			return cmd
+		}
+
 		executeAction(ActionReboot, os.Getenv("TEST_MESSAGE"), false)
 
 		// If it reaches here without os.Exit(1), exit 0 to indicate success
 		os.Exit(0)
 	}
 
-	// Setup a temporary directory for mock executables
-	tmpDir := t.TempDir()
-
-	// Create mock executables based on the OS
-	var syscmd string
-	switch runtime.GOOS {
-	case "windows":
-		syscmd = "shutdown.bat" // Windows executeSystemCommand uses "shutdown"
-	case "darwin":
-		syscmd = "shutdown"
-	default:
-		syscmd = "systemctl"
-	}
-
-	mockBinSuccess := filepath.Join(tmpDir, syscmd)
-	_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
-
-	// also mock wall
-	if runtime.GOOS != "windows" {
-		mockWall := filepath.Join(tmpDir, "wall")
-		_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 0\n"), 0755)
-	}
-
 	t.Run("SuccessWithMessage", func(t *testing.T) {
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "TEST_MESSAGE=rebooting")
 		err := cmd.Run()
 		if err != nil {
 			t.Fatalf("expected success, got err: %v", err)
@@ -2338,11 +2354,8 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 
 	t.Run("Failure", func(t *testing.T) {
-		// Overwrite with failing executable
-		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 1\n"), 0755)
-
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir)
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_FAIL=1")
 		err := cmd.Run()
 		if e, ok := err.(*exec.ExitError); ok && !e.Success() {
 			// Expected
@@ -2352,19 +2365,25 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 
 	t.Run("SuccessWithMessageFailedWall", func(t *testing.T) {
-		// Restore successful syscmd
-		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
-		// Make wall fail
-		if runtime.GOOS != "windows" {
-			mockWall := filepath.Join(tmpDir, "wall")
-			_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 1\n"), 0755)
-		}
-
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_WALL_FAIL=1", "TEST_MESSAGE=rebooting")
 		err := cmd.Run()
 		if err != nil {
 			t.Fatalf("expected success, got err: %v", err)
 		}
 	})
+}
+
+// TestMockExecProcess is a helper target for our mocked execCmdFunc
+func TestMockExecProcess(t *testing.T) {
+	if os.Getenv("TEST_IS_MOCK_PROCESS") != "1" {
+		return
+	}
+
+	for _, arg := range os.Args {
+		if arg == "-mock-fail=1" {
+			os.Exit(1)
+		}
+	}
+	os.Exit(0)
 }
