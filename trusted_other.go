@@ -4,6 +4,6 @@ package main
 
 import "fmt"
 
-func trustedWindowsSystemDirectory() (string, error) {
-	return "", fmt.Errorf("Windows system directory is unavailable")
+var trustedWindowsSystemDirectory = func() (string, error) {
+	return "", fmt.Errorf("windows system directory is unavailable")
 }

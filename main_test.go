@@ -26,46 +26,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	logger = log.New(io.Discard, appName+": ", log.LstdFlags)
-
-	// Default command failures must be simulated, even when tests run as root.
-	commandDir, err := os.MkdirTemp("", "sysreboot-test-commands-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	for _, command := range []string{"systemctl", "shutdown", "halt", "wall"} {
-		script := "#!/bin/sh\nexit 1\n"
-		if runtime.GOOS == "windows" {
-			command += ".bat"
-			script = "@exit /b 1\r\n"
-		}
-		if err := os.WriteFile(filepath.Join(commandDir, command), []byte(script), 0700); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			_ = os.RemoveAll(commandDir)
-			os.Exit(1)
-		}
-	}
-	originalPath := os.Getenv("PATH")
-	if err := os.Setenv("PATH", commandDir+string(os.PathListSeparator)+originalPath); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		_ = os.RemoveAll(commandDir)
-		os.Exit(1)
-	}
-
-	// Save original values
-	originalLogWriter := logWriter
-	originalLogger := logger
-
-	// Run tests
-	code := m.Run()
-
-	// Restore original values
-	logWriter = originalLogWriter
-	logger = originalLogger
-	_ = os.Setenv("PATH", originalPath)
-	_ = os.RemoveAll(commandDir)
-
-	os.Exit(code)
+	execCmdFunc = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return harmlessTestCommand(ctx, "fail") }
+	os.Exit(m.Run())
 }
 
 // setupTestLogger creates a test logger that writes to a buffer
@@ -2260,10 +2222,6 @@ func TestMetadataCommandsDoNotNeedLogDirectory(t *testing.T) {
 }
 
 // Every test defaults to harmless child-process execution, including older tests.
-func TestMain(m *testing.M) {
-	execCmdFunc = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return harmlessTestCommand(ctx, "success") }
-	os.Exit(m.Run())
-}
 func harmlessTestCommand(ctx context.Context, outcome string) *exec.Cmd {
 	return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHarmlessCommandProcess$", "--", outcome)
 }
