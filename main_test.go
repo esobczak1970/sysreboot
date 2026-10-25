@@ -54,6 +54,31 @@ func resetFlags() {
 	flagVersion = false
 }
 
+func TestResolveExecutable(t *testing.T) {
+	tests := []struct {
+		name        string
+		execName    string
+		expectError bool
+	}{
+		{"systemctl", "systemctl", false},
+		{"shutdown", "shutdown", false},
+		{"halt", "halt", false},
+		{"wall", "wall", false},
+		{"untrusted", "some_untrusted_exec", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveExecutable(tt.execName)
+			if tt.expectError && err == nil {
+				t.Errorf("resolveExecutable(%s) expected error, got nil", tt.execName)
+			}
+			// Note: If tests run on a system without the executables, it might fail.
+			// However, testing for untrusted executable should definitely fail.
+		})
+	}
+}
+
 func TestGetLogFileDirectory(t *testing.T) {
 	// Test on actual OS
 	dir := getLogFileDirectory()
@@ -80,6 +105,28 @@ func TestGetLogFileDirectory(t *testing.T) {
 				t.Errorf("getLogFileDirectory() without home = %v, want .", dir)
 			}
 		}
+	}
+}
+
+func TestExecuteSystemCommandError(t *testing.T) {
+	setupTestLogger()
+
+	// Temporarily override execCmdFunc to mock a failed exec
+	oldExecCmdFunc := execCmdFunc
+	defer func() { execCmdFunc = oldExecCmdFunc }()
+
+	execCmdFunc = func(ctx context.Context, name string, _ ...string) *exec.Cmd {
+		return harmlessTestCommand(ctx, "fail")
+	}
+
+	// Skip on darwin as it checks for root privileges first
+	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
+		t.Skip("Skipping on darwin for non-root users")
+	}
+
+	err := executeSystemCommand(ActionReboot)
+	if err == nil {
+		t.Error("executeSystemCommand should return an error when command fails")
 	}
 }
 
@@ -2179,6 +2226,25 @@ func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
 	dir := getLogFileDirectory()
 	if dir != "." {
 		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
+	}
+}
+
+func TestGetPIDFilePath(t *testing.T) {
+	// Need to clear cached path by resetting pidFilePathOnce (sync.Once)
+	// We'll just test that we get something valid and the function doesn't panic.
+	path := getPIDFilePath()
+	if path == "" {
+		t.Error("getPIDFilePath() returned empty string")
+	}
+
+	if pidFileDirOverride != "" {
+		if !strings.Contains(path, pidFileDirOverride) {
+			t.Errorf("getPIDFilePath() expected to contain override dir %s, got %s", pidFileDirOverride, path)
+		}
+	} else {
+		if !strings.HasSuffix(path, pidFileName) {
+			t.Errorf("getPIDFilePath() expected to end with %s, got %s", pidFileName, path)
+		}
 	}
 }
 
