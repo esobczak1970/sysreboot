@@ -56,13 +56,17 @@ var (
 var execCmdFunc = exec.CommandContext
 
 func resolveExecutable(name string) (string, error) {
+	return resolveExecutableInternal(name, runtime.GOOS)
+}
+
+func resolveExecutableInternal(name string, goos string) (string, error) {
 	var searchPaths []string
 
 	switch name {
 	case "systemctl":
 		searchPaths = []string{"/usr/bin/systemctl", "/bin/systemctl"}
 	case "shutdown":
-		if runtime.GOOS == "windows" {
+		if goos == "windows" {
 			sysDir, err := trustedWindowsSystemDirectory()
 			if err != nil {
 				return "", err
@@ -191,8 +195,12 @@ func initLogger() {
 }
 
 func getLogFileDirectory() string {
+	return getLogFileDirectoryInternal(runtime.GOOS)
+}
+
+func getLogFileDirectoryInternal(goos string) string {
 	// Get the appropriate log file directory based on the operating system.
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
 			appData = "."
@@ -260,13 +268,17 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 }
 
 func sendWallMessage(message string) error {
+	return sendWallMessageInternal(message, runtime.GOOS)
+}
+
+func sendWallMessageInternal(message string, goos string) error {
 	// Send a message to all users on the system using the 'wall' command (Unix-like systems only).
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if goos != "linux" && goos != "darwin" {
 		logVerbose("Wall message feature is not supported on this OS.")
-		return fmt.Errorf("wall not supported on %s", runtime.GOOS)
+		return fmt.Errorf("wall not supported on %s", goos)
 	}
 
-	wallPath, err := resolveExecutable("wall")
+	wallPath, err := resolveExecutableInternal("wall", goos)
 	if err != nil {
 		logger.Printf("Warning: failed to resolve wall command: %v", err)
 		return err
@@ -346,6 +358,10 @@ func confirmAction() bool {
 }
 
 func executeSystemCommand(action string) error {
+	return executeSystemCommandInternal(action, runtime.GOOS)
+}
+
+func executeSystemCommandInternal(action string, goos string) error {
 	if action != ActionReboot && action != ActionPoweroff && action != ActionHalt {
 		return fmt.Errorf("unsupported action: %s", action)
 	}
@@ -353,7 +369,7 @@ func executeSystemCommand(action string) error {
 	var cmdName string
 	var cmdArgs []string
 
-	switch runtime.GOOS {
+	switch goos {
 	case "linux":
 		// Use systemctl for modern Linux systems
 		cmdName = "systemctl"
@@ -390,10 +406,10 @@ func executeSystemCommand(action string) error {
 			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
 	default:
-		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+		return fmt.Errorf("unsupported operating system: %s", goos)
 	}
 
-	execPath, err := resolveExecutable(cmdName)
+	execPath, err := resolveExecutableInternal(cmdName, goos)
 	if err != nil {
 		return err
 	}
@@ -405,7 +421,7 @@ func executeSystemCommand(action string) error {
 	// Do not inherit untrusted environment variables for high-privilege execution
 	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
 
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		sysDir := filepath.Dir(filepath.Dir(execPath))
 		if sysDir != "" {
 			cmd.Env = append(cmd.Env, "SystemRoot="+sysDir)
@@ -431,6 +447,10 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
+	return getPIDFilePathInternal(runtime.GOOS)
+}
+
+func getPIDFilePathInternal(goos string) string {
 	// Tests can override the path without affecting the cached production path.
 	if pidFileDirOverride != "" {
 		return filepath.Join(pidFileDirOverride, pidFileName)
@@ -438,7 +458,7 @@ func getPIDFilePath() string {
 
 	pidFilePathOnce.Do(func() {
 		// Try primary location first.
-		if runtime.GOOS != "windows" {
+		if goos != "windows" {
 			cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
 			return
 		}
@@ -538,8 +558,12 @@ func setupPIDFile(scheduleInfo ScheduleInfo) func() {
 
 // processExists checks if a process with the given PID exists
 func processExists(pid int) bool {
+	return processExistsInternal(pid, runtime.GOOS)
+}
+
+func processExistsInternal(pid int, goos string) bool {
 	// On Unix systems, we can send signal 0 to check if process exists
-	if runtime.GOOS != "windows" {
+	if goos != "windows" {
 		process, err := findProcessFunc(pid)
 		if err != nil {
 			return false
