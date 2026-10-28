@@ -285,6 +285,7 @@ func (m *mockProcessController) Kill() error {
 
 // Add tests for main function
 func TestMain_Coverage(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -305,6 +306,7 @@ func TestMain_Coverage(t *testing.T) {
 }
 
 func TestMain_Coverage_Status(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -333,6 +335,7 @@ func TestMain_Coverage_Status(t *testing.T) {
 // avoiding structural refactors merely for coverage.
 
 func TestMain_Coverage_TimeAndDelay(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 
 	oldOsExit := osExit
