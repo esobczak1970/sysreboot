@@ -6,7 +6,7 @@ Detailed usage notes are also available in [\`docs/README.md\`](docs/README.md).
 
 ## Requirements
 
-- Go 1.27.3 (required).
+- Go (version from `.go-version`) (required).
 - Appropriate operating-system privileges for reboot, shutdown, or halt operations.
 - Unix-specific features such as \`wall\` are only available on supported Unix-like systems.
 
@@ -54,3 +54,5 @@ make check
 - [Historical coverage report](docs/TEST_COVERAGE_REPORT.md).
 
 The repository \`LICENSE\` file contains the project license.
+
+Go toolchain selection is centralized in `.go-version`. Module `go`/`toolchain` directives mirror that pin because Go requires literal versions. Run `make go-version-check` to verify the contract before building.

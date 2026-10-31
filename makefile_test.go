@@ -17,9 +17,12 @@ func TestMakefileFormattingAndToolchain(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	for _, name := range []string{"Makefile", ".go-version"} {
+	for _, name := range []string{"Makefile", ".go-version", "go.mod", "scripts/check-go-version.sh"} {
 		data, err := os.ReadFile(name)
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
