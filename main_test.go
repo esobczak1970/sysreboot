@@ -871,6 +871,91 @@ func TestMain_ConflictingFlagsBranch(t *testing.T) {
 	}
 }
 
+func TestMain_RootPrivilegeCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping Unix privilege test on Windows")
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("Running as root, skipping non-root privilege test")
+	}
+
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	flagTime = ""
+	flagDelay = 0
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for root privilege check, got %d", exitCode)
+	}
+}
+
+func TestMain_HandleScheduledTime(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		t.Skip("Skipping test running as non-root on Unix")
+	}
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	// Use an invalid time to make it fail quickly in handleScheduledTime
+	flagTime = "invalid-time-format"
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 from handleScheduledTime, got %d", exitCode)
+	}
+}
+
+func TestMain_HandleDelay(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		t.Skip("Skipping test running as non-root on Unix")
+	}
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"sysreboot", "--delay", "0"}
+
+	oldExecCmdFunc := execCmdFunc
+	defer func() { execCmdFunc = oldExecCmdFunc }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return harmlessTestCommand(ctx, "success")
+	}
+
+	flagDelay = 0
+
+	main()
+
+	if exitCode == 1 {
+		t.Errorf("Expected handleDelay to run successfully, but got exitCode 1")
+	}
+}
+
 func TestMainFunction(t *testing.T) {
 	isolateUserLog(t)
 	setupTestLogger()
