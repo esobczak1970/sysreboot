@@ -134,3 +134,17 @@ The uncovered code consists primarily of:
 - Platform-specific branches not executed on test platform
 
 This represents a **high-quality, production-ready test suite** with thorough coverage of all testable code paths.
+
+## Windows command regression coverage
+
+Non-Windows test hosts now exercise Windows command resolution with a scoped
+trusted-directory fixture. The tests assert command paths, action arguments,
+sanitized environments, subprocess errors, and lookup failures using the
+existing harmless child-process helper. They never invoke the fixture's
+shutdown executable. Native Windows execution still requires a Windows host;
+cross-compilation alone does not establish runtime compatibility.
+
+The Windows trusted-directory lookup now exposes the same internal test seam
+as other platforms while retaining its OS KnownDLL implementation. Windows
+test-binary compilation and vet checks cover the platform-specific code; they
+do not replace native Windows runtime tests.

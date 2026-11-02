@@ -6,8 +6,12 @@ import (
 	"unsafe"
 )
 
+// Keep the same scoped test seam as trusted_other.go. Production still queries
+// the OS through a KnownDLL and never trusts the caller's SystemRoot.
+var trustedWindowsSystemDirectory = windowsSystemDirectory
+
 // kernel32 is a Windows KnownDLL; query the OS instead of trusting SystemRoot.
-func trustedWindowsSystemDirectory() (string, error) {
+func windowsSystemDirectory() (string, error) {
 	buffer := make([]uint16, 32768)
 	n, _, err := syscall.NewLazyDLL("kernel32.dll").NewProc("GetSystemDirectoryW").Call(uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
 	if n == 0 {

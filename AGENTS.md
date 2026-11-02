@@ -101,3 +101,7 @@ same change.
   confirmation, cancellation, privilege checks, and actionable errors.
 - Keep platform-specific command execution centralized.
 - Tests must never trigger real reboot/shutdown operations.
+
+- Coverage additions must assert observable results and errors. Reuse
+  `harmlessTestCommand` for subprocess tests; do not discard return values
+  merely to increase coverage.
