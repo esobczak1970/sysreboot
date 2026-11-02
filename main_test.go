@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,18 +21,13 @@ import (
 
 // TestMain handles test setup and teardown
 func TestMain(m *testing.M) {
-	// Save original values
-	originalLogWriter := logWriter
-	originalLogger := logger
-
-	// Run tests
-	code := m.Run()
-
-	// Restore original values
-	logWriter = originalLogWriter
-	logger = originalLogger
-
-	os.Exit(code)
+	if logWriter != nil {
+		fmt.Fprintln(os.Stderr, "package initialization opened a user log")
+		os.Exit(1)
+	}
+	logger = log.New(io.Discard, appName+": ", log.LstdFlags)
+	execCmdFunc = func(ctx context.Context, _ string, _ ...string) *exec.Cmd { return harmlessTestCommand(ctx, "fail") }
+	os.Exit(m.Run())
 }
 
 // setupTestLogger creates a test logger that writes to a buffer
@@ -43,15 +39,43 @@ func setupTestLogger() *bytes.Buffer {
 
 // resetFlags resets all flags to their default values
 func resetFlags() {
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			*v = fd.defaultVal.(bool)
-		case *int:
-			*v = fd.defaultVal.(int)
-		case *string:
-			*v = fd.defaultVal.(string)
-		}
+	flagCancel = false
+	flagConfirm = false
+	flagConfirmTimeout = 10
+	flagDelay = 0
+	flagHalt = false
+	flagMessage = ""
+	flagPoweroff = false
+	flagReboot = true
+	flagShutdown = false
+	flagStatus = false
+	flagTime = ""
+	flagVerbose = false
+	flagVersion = false
+}
+
+func TestResolveExecutable(t *testing.T) {
+	tests := []struct {
+		name        string
+		execName    string
+		expectError bool
+	}{
+		{"systemctl", "systemctl", false},
+		{"shutdown", "shutdown", false},
+		{"halt", "halt", false},
+		{"wall", "wall", false},
+		{"untrusted", "some_untrusted_exec", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := resolveExecutable(tt.execName)
+			if tt.expectError && err == nil {
+				t.Errorf("resolveExecutable(%s) expected error, got nil", tt.execName)
+			}
+			// Note: If tests run on a system without the executables, it might fail.
+			// However, testing for untrusted executable should definitely fail.
+		})
 	}
 }
 
@@ -81,6 +105,28 @@ func TestGetLogFileDirectory(t *testing.T) {
 				t.Errorf("getLogFileDirectory() without home = %v, want .", dir)
 			}
 		}
+	}
+}
+
+func TestExecuteSystemCommandError(t *testing.T) {
+	setupTestLogger()
+
+	// Temporarily override execCmdFunc to mock a failed exec
+	oldExecCmdFunc := execCmdFunc
+	defer func() { execCmdFunc = oldExecCmdFunc }()
+
+	execCmdFunc = func(ctx context.Context, name string, _ ...string) *exec.Cmd {
+		return harmlessTestCommand(ctx, "fail")
+	}
+
+	// Skip on darwin as it checks for root privileges first
+	if runtime.GOOS == "darwin" && os.Geteuid() != 0 {
+		t.Skip("Skipping on darwin for non-root users")
+	}
+
+	err := executeSystemCommand(ActionReboot)
+	if err == nil {
+		t.Error("executeSystemCommand should return an error when command fails")
 	}
 }
 
@@ -287,7 +333,7 @@ func TestConfirmAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Set timeout
-			*appFlags[confirmTimeoutIndex].value.(*int) = tt.timeout
+			flagConfirmTimeout = tt.timeout
 
 			// Mock stdin
 			oldStdin := os.Stdin
@@ -392,40 +438,6 @@ func TestExecuteSystemCommandUnsupportedOS(t *testing.T) {
 	}
 }
 
-func TestGetFlagInt(t *testing.T) {
-	resetFlags()
-
-	tests := []struct {
-		name     string
-		index    int
-		setValue int
-		expected int
-	}{
-		{
-			name:     "Get confirmTimeoutIndex",
-			index:    confirmTimeoutIndex,
-			setValue: 15,
-			expected: 15,
-		},
-		{
-			name:     "Get delayIndex",
-			index:    delayIndex,
-			setValue: 30,
-			expected: 30,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			*appFlags[tt.index].value.(*int) = tt.setValue
-			result := getFlagInt(tt.index)
-			if result != tt.expected {
-				t.Errorf("getFlagInt(%d) = %d, want %d", tt.index, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestLogVerbose(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -451,7 +463,7 @@ func TestLogVerbose(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf := setupTestLogger()
 			resetFlags()
-			*appFlags[verboseIndex].value.(*bool) = tt.verbose
+			flagVerbose = tt.verbose
 
 			// Capture stdout
 			oldStdout := os.Stdout
@@ -548,8 +560,8 @@ func TestExecuteAction(t *testing.T) {
 				t.Skip("Skipping actual system command execution")
 			}
 
-			*appFlags[confirmIndex].value.(*bool) = tt.confirmation
-			*appFlags[verboseIndex].value.(*bool) = true
+			flagConfirm = tt.confirmation
+			flagVerbose = true
 
 			if tt.confirmation && tt.confirmInput != "" {
 				oldStdin := os.Stdin
@@ -572,8 +584,8 @@ func TestExecuteActionCancelled(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[confirmIndex].value.(*bool) = true
-	*appFlags[confirmTimeoutIndex].value.(*int) = 1
+	flagConfirm = true
+	flagConfirmTimeout = 1
 
 	// Mock stdin with 'n' response
 	oldStdin := os.Stdin
@@ -673,7 +685,7 @@ func TestHandleDelay(t *testing.T) {
 			// Mock the actual execution to avoid system commands
 			t.Skip("Skipping actual system command execution")
 
-			*appFlags[delayIndex].value.(*int) = tt.delay
+			flagDelay = tt.delay
 			handleDelay(context.Background(), tt.delay, tt.action)
 		})
 	}
@@ -688,16 +700,7 @@ func TestMain_VersionFlag(t *testing.T) {
 	flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 
 	// Re-initialize flags for this test
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-		case *int:
-			flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-		case *string:
-			flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-		}
-	}
+	initFlags()
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -709,9 +712,9 @@ func TestMain_VersionFlag(t *testing.T) {
 
 	// This would call os.Exit, so we'll test the version flag separately
 	resetFlags()
-	*appFlags[versionIndex].value.(*bool) = true
+	flagVersion = true
 
-	if *appFlags[versionIndex].value.(*bool) {
+	if flagVersion {
 		fmt.Printf("%s version %s\n", appName, appVersion)
 	}
 
@@ -731,153 +734,13 @@ func TestMain_VersionFlag(t *testing.T) {
 	flag.CommandLine = oldCommandLine
 }
 
-func TestMain_ConflictingFlags(t *testing.T) {
-	setupTestLogger()
-	resetFlags()
-
-	tests := []struct {
-		name         string
-		setFlags     map[int]bool
-		expectAction string
-		expectError  bool
-	}{
-		{
-			name: "Reboot only (default)",
-			setFlags: map[int]bool{
-				rebootIndex: true,
-			},
-			expectAction: ActionReboot,
-			expectError:  false,
-		},
-		{
-			name: "Halt only",
-			setFlags: map[int]bool{
-				haltIndex:   true,
-				rebootIndex: false, // Need to turn off default
-			},
-			expectAction: ActionHalt,
-			expectError:  false,
-		},
-		{
-			name: "Poweroff only",
-			setFlags: map[int]bool{
-				poweroffIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectAction: ActionPoweroff,
-			expectError:  false,
-		},
-		{
-			name: "Shutdown only",
-			setFlags: map[int]bool{
-				shutdownIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectAction: ActionPoweroff,
-			expectError:  false,
-		},
-		{
-			name: "Halt and Poweroff (conflict)",
-			setFlags: map[int]bool{
-				haltIndex:     true,
-				poweroffIndex: true,
-				rebootIndex:   false, // Need to turn off default
-			},
-			expectError: true,
-		},
-		{
-			name: "Reboot and Halt (conflict)",
-			setFlags: map[int]bool{
-				rebootIndex: true,
-				haltIndex:   true,
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resetFlags()
-
-			for idx, val := range tt.setFlags {
-				*appFlags[idx].value.(*bool) = val
-			}
-
-			action := ActionReboot
-			conflictingFlags := 0
-
-			if *appFlags[haltIndex].value.(*bool) {
-				action = ActionHalt
-				conflictingFlags++
-			}
-			if *appFlags[poweroffIndex].value.(*bool) {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if *appFlags[shutdownIndex].value.(*bool) {
-				action = ActionPoweroff
-				conflictingFlags++
-			}
-			if *appFlags[rebootIndex].value.(*bool) && conflictingFlags > 0 {
-				conflictingFlags++
-			}
-
-			hasConflict := conflictingFlags > 1
-
-			if tt.expectError != hasConflict {
-				t.Errorf("Conflict detection = %v, want %v", hasConflict, tt.expectError)
-			}
-
-			if !tt.expectError && action != tt.expectAction {
-				t.Errorf("Action = %v, want %v", action, tt.expectAction)
-			}
-		})
-	}
-}
-
-func TestAppFlagsIndexOrder(t *testing.T) {
-	// Verify that flag indices match appFlags order
-	expectedOrder := []string{
-		"cancel",
-		"confirm",
-		"confirm-timeout",
-		"delay",
-		ActionHalt,
-		"message",
-		ActionPoweroff,
-		ActionReboot,
-		"shutdown",
-		"status",
-		"time",
-		"verbose",
-		"version",
-	}
-
-	for i, expected := range expectedOrder {
-		if appFlags[i].longName != expected {
-			t.Errorf("appFlags[%d].longName = %s, want %s", i, appFlags[i].longName, expected)
-		}
-	}
-
-	// Verify index constants
-	if appFlags[confirmIndex].longName != "confirm" {
-		t.Error("confirmIndex does not match appFlags order")
-	}
-	if appFlags[rebootIndex].longName != ActionReboot {
-		t.Error("rebootIndex does not match appFlags order")
-	}
-	if appFlags[verboseIndex].longName != "verbose" {
-		t.Error("verboseIndex does not match appFlags order")
-	}
-}
-
 func TestSendWallMessageOnLinux(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("Skipping wall command test on non-Unix system")
 	}
 
 	setupTestLogger()
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 
 	// Test with a message (will likely fail without wall command, but tests the code path)
 	err := sendWallMessage("test message")
@@ -978,28 +841,6 @@ func TestInit(t *testing.T) {
 	}
 }
 
-func TestFlagDataTypes(t *testing.T) {
-	// Test all flag types are correctly set up
-	for i, fd := range appFlags {
-		switch fd.value.(type) {
-		case *bool, *int, *string:
-			// Valid types
-		default:
-			t.Errorf("appFlags[%d] has invalid type: %T", i, fd.value)
-		}
-
-		if fd.longName == "" {
-			t.Errorf("appFlags[%d] missing longName", i)
-		}
-		if fd.shortName == "" {
-			t.Errorf("appFlags[%d] missing shortName", i)
-		}
-		if fd.usage == "" {
-			t.Errorf("appFlags[%d] missing usage", i)
-		}
-	}
-}
-
 func TestConstants(t *testing.T) {
 	if appName != "sysreboot" {
 		t.Errorf("appName = %s, want sysreboot", appName)
@@ -1010,7 +851,113 @@ func TestConstants(t *testing.T) {
 }
 
 // TestMainFunction tests main function logic without running actual os.Exit
+func TestMain_ConflictingFlagsBranch(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+
+	flagHalt = true
+	flagPoweroff = true
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for conflicting flags, got %d", exitCode)
+	}
+}
+
+func TestMain_RootPrivilegeCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping Unix privilege test on Windows")
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("Running as root, skipping non-root privilege test")
+	}
+
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	flagTime = ""
+	flagDelay = 0
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 for root privilege check, got %d", exitCode)
+	}
+}
+
+func TestMain_HandleScheduledTime(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		t.Skip("Skipping test running as non-root on Unix")
+	}
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	// Use an invalid time to make it fail quickly in handleScheduledTime
+	flagTime = "invalid-time-format"
+
+	main()
+
+	if exitCode != 1 {
+		t.Errorf("Expected exit code 1 from handleScheduledTime, got %d", exitCode)
+	}
+}
+
+func TestMain_HandleDelay(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+	resetFlags()
+
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		t.Skip("Skipping test running as non-root on Unix")
+	}
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+
+	oldArgs := os.Args
+	defer func() { os.Args = oldArgs }()
+	os.Args = []string{"sysreboot", "--delay", "0"}
+
+	oldExecCmdFunc := execCmdFunc
+	defer func() { execCmdFunc = oldExecCmdFunc }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return harmlessTestCommand(ctx, "success")
+	}
+
+	flagDelay = 0
+
+	main()
+
+	if exitCode == 1 {
+		t.Errorf("Expected handleDelay to run successfully, but got exitCode 1")
+	}
+}
+
 func TestMainFunction(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 
 	// Mock osExit
@@ -1040,16 +987,7 @@ func TestMainFunction(t *testing.T) {
 		exited = false
 		pidFileDirOverride = t.TempDir()
 		flag.CommandLine = flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-		for _, fd := range appFlags {
-			switch v := fd.value.(type) {
-			case *bool:
-				flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-			case *int:
-				flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-			case *string:
-				flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-			}
-		}
+		initFlags()
 	}
 
 	t.Run("Version Flag", func(t *testing.T) {
@@ -1155,11 +1093,6 @@ func TestMainFunction(t *testing.T) {
 	})
 
 	t.Run("Conflicting flags", func(t *testing.T) {
-		// Mock root access for this test if on unix so we don't fail early
-		if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-			t.Skip("Skipping conflicting flags test as it requires root on unix to pass privilege check")
-		}
-
 		setupSubTest()
 		os.Args = []string{"sysreboot", "--reboot", "--halt"}
 
@@ -1195,8 +1128,8 @@ func TestHandleScheduledTimeSuccess(t *testing.T) {
 	done := make(chan bool)
 	go func() {
 		// This will schedule but not complete
-		*appFlags[messageIndex].value.(*string) = "test"
-		*appFlags[confirmIndex].value.(*bool) = false
+		flagMessage = "test"
+		flagConfirm = false
 		handleScheduledTime(ctx, futureTime, ActionReboot)
 		done <- true
 	}()
@@ -1212,9 +1145,9 @@ func TestHandleDelaySuccess(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[messageIndex].value.(*string) = ""
-	*appFlags[confirmIndex].value.(*bool) = false
-	*appFlags[delayIndex].value.(*int) = 0
+	flagMessage = ""
+	flagConfirm = false
+	flagDelay = 0
 
 	// We can't actually test system commands, so we skip the execution part
 	// But we can verify the logic flow
@@ -1246,7 +1179,7 @@ func TestExecuteActionWithMessage(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 
 	// Test that sending a message doesn't panic (even if wall fails)
 	// We're testing the code path, not actual system changes
@@ -1281,7 +1214,7 @@ func TestSendWallMessageVerboseOff(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[verboseIndex].value.(*bool) = false
+	flagVerbose = false
 
 	err := sendWallMessage("test")
 	// May succeed or fail depending on system, both are acceptable
@@ -1409,8 +1342,8 @@ func TestExecuteActionWithConfirmation(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[confirmIndex].value.(*bool) = true
-	*appFlags[confirmTimeoutIndex].value.(*int) = 1
+	flagConfirm = true
+	flagConfirmTimeout = 1
 
 	// Mock stdin
 	oldStdin := os.Stdin
@@ -1436,8 +1369,8 @@ func TestHandleDelayWithDelay(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	// Can't test actual system commands, but we can test the delay logic
 	delay := 0 // Use 0 to avoid waiting
@@ -1459,8 +1392,8 @@ func TestHandleDelay_WithCancellation(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1498,17 +1431,15 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	defer func() { pidFileDirOverride = originalOverride }()
 
-	*appFlags[messageIndex].value.(*string) = "test message"
-	*appFlags[confirmIndex].value.(*bool) = false
+	flagMessage = "test message"
+	flagConfirm = false
 
 	errChan := make(chan struct{})
-	ctx := context.Background()
 
-	// Ignore os.Interrupt globally so that if the signal is sent slightly before
-	// handleDelay registers its own signal handler, it won't crash the test suite.
-	// We restore the default behavior when the test finishes.
-	signal.Ignore(os.Interrupt)
-	defer signal.Reset(os.Interrupt)
+	// HandleDelay no longer manages signal processing internally;
+	// it relies on the provided context being canceled (e.g. via signal.NotifyContext)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	go func() {
 		// Delay > 0 will create PID file and block on timer
@@ -1516,7 +1447,7 @@ func TestHandleDelay_WithSignalCancellation(t *testing.T) {
 		close(errChan)
 	}()
 
-	// Ensure the handleDelay had time to start and write PID file / register signal.Notify
+	// Ensure the handleDelay had time to start and write PID file
 	time.Sleep(100 * time.Millisecond)
 
 	// Inject signal
@@ -1581,14 +1512,14 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		// Test unsupported OS path
 		setupTestLogger()
-		*appFlags[verboseIndex].value.(*bool) = true
+		flagVerbose = true
 
 		err := sendWallMessage("test")
 		if err == nil {
 			t.Error("sendWallMessage should return error on Windows")
 		}
 
-		*appFlags[verboseIndex].value.(*bool) = false
+		flagVerbose = false
 		err = sendWallMessage("test")
 		if err == nil {
 			t.Error("sendWallMessage should return error on Windows")
@@ -1600,12 +1531,12 @@ func TestSendWallMessageAllPaths(t *testing.T) {
 	setupTestLogger()
 
 	// Test with verbose on
-	*appFlags[verboseIndex].value.(*bool) = true
+	flagVerbose = true
 	err := sendWallMessage("test verbose")
 	t.Logf("sendWallMessage with verbose=true: %v", err)
 
 	// Test with verbose off
-	*appFlags[verboseIndex].value.(*bool) = false
+	flagVerbose = false
 	err = sendWallMessage("test silent")
 	t.Logf("sendWallMessage with verbose=false: %v", err)
 }
@@ -1680,7 +1611,7 @@ func TestExecuteActionFullFlow(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			*appFlags[verboseIndex].value.(*bool) = tt.verbose
+			flagVerbose = tt.verbose
 
 			// We can't actually execute system commands in tests
 			// but we can verify the logic paths work
@@ -1721,6 +1652,7 @@ func TestHandleScheduledTimeErrorPath(t *testing.T) {
 
 // TestMain_ExitCodes tests that main exits correctly
 func TestMain_ExitCodes(t *testing.T) {
+	isolateUserLog(t)
 	setupTestLogger()
 	resetFlags()
 
@@ -1733,7 +1665,7 @@ func TestMain_ExitCodes(t *testing.T) {
 		// Do not actually exit so the test can continue
 	}
 
-	*appFlags[versionIndex].value.(*bool) = true
+	flagVersion = true
 	main()
 
 	if exitCode != 0 {
@@ -1827,16 +1759,30 @@ func TestExecuteSystemCommandAllOSPaths(t *testing.T) {
 	}
 }
 
-// TestInitLoggerCreation verifies logger is created
+// TestInitLoggerCreation verifies logging uses the selected user directory.
 func TestInitLoggerCreation(t *testing.T) {
-	// Logger should always be initialized by init()
-	if logger == nil {
-		t.Error("init() did not create logger")
-	}
+	isolateUserLog(t)
+	originalLogger, originalWriter, originalFile := logger, logWriter, logFile
+	t.Cleanup(func() {
+		cleanup()
+		logger, logWriter, logFile = originalLogger, originalWriter, originalFile
+	})
 
-	// logWriter may be nil after cleanup in TestMain, which is OK
-	// We just verify it was set up initially
-	t.Log("Logger was properly initialized by init()")
+	initLogger()
+	if logger == nil || logWriter == nil {
+		t.Fatal("initLogger did not create the logger and file writer")
+	}
+	if want := filepath.Join(getLogFileDirectory(), appName+".log"); logFile != want {
+		t.Fatalf("log file = %q, want %q", logFile, want)
+	}
+	logger.Print("isolated logger test")
+	contents, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "isolated logger test") {
+		t.Fatalf("logger did not write to its selected file: %s", contents)
+	}
 }
 
 // TestMainWithNonRootUnix tests main's privilege check
@@ -1976,10 +1922,16 @@ func TestCancelScheduledAction_ActiveAction(t *testing.T) {
 	}
 	defer func() { _ = removePIDFile() }()
 
-	// Ignore SIGINT so cancelScheduledAction doesn't kill the test process
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt)
-	defer signal.Stop(c)
+	// Exercise the production cancellation path without signaling the test runner.
+	process := &cancellationTestProcess{exists: true}
+	originalLookup := findProcessFunc
+	findProcessFunc = func(pid int) (processController, error) {
+		if pid != os.Getpid() {
+			t.Fatalf("unexpected PID %d", pid)
+		}
+		return process, nil
+	}
+	t.Cleanup(func() { findProcessFunc = originalLookup })
 
 	// Capture stdout
 	oldStdout := os.Stdout
@@ -1995,6 +1947,9 @@ func TestCancelScheduledAction_ActiveAction(t *testing.T) {
 		t.Errorf("cancelScheduledAction returned error: %v", err)
 	}
 
+	if !slices.Contains(process.signals, os.Interrupt) {
+		t.Error("cancellation did not request SIGINT")
+	}
 	// Verify PID file is gone
 	pidPath := getPIDFilePath()
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
@@ -2291,46 +2246,31 @@ func TestExecuteActionIntegration(t *testing.T) {
 
 	// This block runs when executed as a subprocess by the test itself
 	if os.Getenv("TEST_EXECUTE_ACTION_INTEGRATION") == "1" {
-		mockDir := os.Getenv("MOCK_BIN_DIR")
-		if mockDir != "" {
-			_ = os.Setenv("PATH", mockDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		flagVerbose = true
+
+		// Use our injectable command executor for tests
+		execCmdFunc = func(ctx context.Context, name string, arg ...string) *exec.Cmd {
+			// Find the mock script for this command name
+			mockFail := os.Getenv("MOCK_FAIL") == "1"
+			mockWallFail := os.Getenv("MOCK_WALL_FAIL") == "1"
+
+			outcome := "success"
+			if (strings.Contains(name, "wall") && mockWallFail) || (mockFail && !strings.Contains(name, "wall")) {
+				outcome = "fail"
+			}
+			cmd := harmlessTestCommand(ctx, outcome)
+			return cmd
 		}
 
-		*appFlags[verboseIndex].value.(*bool) = true
-
-		// If MOCK_FAIL is 1, it will fail and os.Exit(1).
 		executeAction(ActionReboot, os.Getenv("TEST_MESSAGE"), false)
 
 		// If it reaches here without os.Exit(1), exit 0 to indicate success
 		os.Exit(0)
 	}
 
-	// Setup a temporary directory for mock executables
-	tmpDir := t.TempDir()
-
-	// Create mock executables based on the OS
-	var syscmd string
-	switch runtime.GOOS {
-	case "windows":
-		syscmd = "shutdown.bat" // Windows executeSystemCommand uses "shutdown"
-	case "darwin":
-		syscmd = "shutdown"
-	default:
-		syscmd = "systemctl"
-	}
-
-	mockBinSuccess := filepath.Join(tmpDir, syscmd)
-	_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
-
-	// also mock wall
-	if runtime.GOOS != "windows" {
-		mockWall := filepath.Join(tmpDir, "wall")
-		_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 0\n"), 0755)
-	}
-
 	t.Run("SuccessWithMessage", func(t *testing.T) {
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "TEST_MESSAGE=rebooting")
 		err := cmd.Run()
 		if err != nil {
 			t.Fatalf("expected success, got err: %v", err)
@@ -2338,11 +2278,8 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 
 	t.Run("Failure", func(t *testing.T) {
-		// Overwrite with failing executable
-		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 1\n"), 0755)
-
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir)
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_FAIL=1")
 		err := cmd.Run()
 		if e, ok := err.(*exec.ExitError); ok && !e.Success() {
 			// Expected
@@ -2352,19 +2289,124 @@ func TestExecuteActionIntegration(t *testing.T) {
 	})
 
 	t.Run("SuccessWithMessageFailedWall", func(t *testing.T) {
-		// Restore successful syscmd
-		_ = os.WriteFile(mockBinSuccess, []byte("#!/bin/sh\nexit 0\n"), 0755)
-		// Make wall fail
-		if runtime.GOOS != "windows" {
-			mockWall := filepath.Join(tmpDir, "wall")
-			_ = os.WriteFile(mockWall, []byte("#!/bin/sh\nexit 1\n"), 0755)
-		}
-
 		cmd := exec.Command(os.Args[0], "-test.run=TestExecuteActionIntegration")
-		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_BIN_DIR="+tmpDir, "TEST_MESSAGE=rebooting")
+		cmd.Env = append(os.Environ(), "TEST_EXECUTE_ACTION_INTEGRATION=1", "MOCK_WALL_FAIL=1", "TEST_MESSAGE=rebooting")
 		err := cmd.Run()
 		if err != nil {
 			t.Fatalf("expected success, got err: %v", err)
 		}
 	})
+}
+
+// TestGetLogFileDirectoryUserHomeDirError tests the fallback of UserHomeDir
+func TestGetLogFileDirectoryUserHomeDirError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping UserHomeDir test on Windows")
+	}
+
+	// t.Setenv safely restores the environment variable when the test completes
+	// even if the value was originally unset.
+	t.Setenv("HOME", "")
+
+	dir := getLogFileDirectory()
+	if dir != "." {
+		t.Errorf("getLogFileDirectory() without HOME = %v, want .", dir)
+	}
+}
+
+func TestGetPIDFilePath(t *testing.T) {
+	// Need to clear cached path by resetting pidFilePathOnce (sync.Once)
+	// We'll just test that we get something valid and the function doesn't panic.
+	path := getPIDFilePath()
+	if path == "" {
+		t.Error("getPIDFilePath() returned empty string")
+	}
+
+	if pidFileDirOverride != "" {
+		if !strings.Contains(path, pidFileDirOverride) {
+			t.Errorf("getPIDFilePath() expected to contain override dir %s, got %s", pidFileDirOverride, path)
+		}
+	} else {
+		if !strings.HasSuffix(path, pidFileName) {
+			t.Errorf("getPIDFilePath() expected to end with %s, got %s", pidFileName, path)
+		}
+	}
+}
+
+// isolateUserLog keeps main-path tests from creating or modifying a user log.
+func isolateUserLog(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("APPDATA", t.TempDir())
+	} else {
+		t.Setenv("HOME", t.TempDir())
+	}
+}
+
+func TestMetadataCommandsDoNotNeedLogDirectory(t *testing.T) {
+	if argument := os.Getenv("SYSREBOOT_METADATA_ARGUMENT"); argument == "--help" || argument == "--version" {
+		flag.CommandLine = flag.NewFlagSet("sysreboot", flag.ExitOnError)
+		initFlags()
+		flag.Usage = customUsage
+		os.Args = []string{"sysreboot", argument}
+		main()
+		return
+	}
+
+	for _, argument := range []string{"--help", "--version"} {
+		t.Run(argument, func(t *testing.T) {
+			missingDirectory := filepath.Join(t.TempDir(), "missing")
+			cmd := exec.Command(os.Args[0], "-test.run=^TestMetadataCommandsDoNotNeedLogDirectory$")
+			cmd.Env = append(os.Environ(), "SYSREBOOT_METADATA_ARGUMENT="+argument, "HOME="+missingDirectory, "APPDATA="+missingDirectory)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("%s failed without a writable log directory: %v\n%s", argument, err, output)
+			}
+			if !strings.Contains(string(output), appName) {
+				t.Fatalf("%s did not print metadata: %s", argument, output)
+			}
+			if _, err := os.Stat(missingDirectory); !os.IsNotExist(err) {
+				t.Fatalf("%s unexpectedly touched the log directory: %v", argument, err)
+			}
+		})
+	}
+}
+
+// Every test defaults to harmless child-process execution, including older tests.
+func harmlessTestCommand(ctx context.Context, outcome string) *exec.Cmd {
+	return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHarmlessCommandProcess$", "--", outcome)
+}
+func TestHarmlessCommandProcess(t *testing.T) {
+	if len(os.Args) < 3 || os.Args[len(os.Args)-2] != "--" {
+		return
+	}
+	if os.Args[len(os.Args)-1] == "fail" {
+		os.Exit(1)
+	}
+	os.Exit(0)
+}
+func TestTrustedExecutionIgnoresPATH(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux trusted path regression")
+	}
+	setupTestLogger()
+	t.Setenv("PATH", t.TempDir())
+	original := execCmdFunc
+	t.Cleanup(func() { execCmdFunc = original })
+	var requested string
+	var command *exec.Cmd
+	execCmdFunc = func(ctx context.Context, name string, _ ...string) *exec.Cmd {
+		requested = name
+		command = harmlessTestCommand(ctx, "success")
+		return command
+	}
+	if err := executeSystemCommand(ActionReboot); err != nil {
+		t.Fatal(err)
+	}
+	if requested != "/usr/bin/systemctl" && requested != "/bin/systemctl" {
+		t.Fatalf("untrusted path: %s", requested)
+	}
+	if len(command.Env) != 1 || command.Env[0] != "PATH=/usr/bin:/bin:/usr/sbin:/sbin" {
+		t.Fatalf("unsafe environment: %q", command.Env)
+	}
 }

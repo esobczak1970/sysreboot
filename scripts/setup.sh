@@ -2,56 +2,27 @@
 
 set -Eeuo pipefail
 
-# ---------------------------------------------------------------------------
-# Go repository setup
-#
-# Standard behavior:
-#   - Go 1.27.2 is the baseline toolchain.
-#   - An older system/bootstrap Go (for example Go 1.24.3) is acceptable.
-#   - Go's built-in toolchain manager downloads/uses Go 1.27.2 automatically.
-#   - A repository requiring a newer Go version may automatically move forward.
-#   - GOTOOLCHAIN=local is intentionally NOT used.
-#
-# Override when intentionally advancing the organization-wide baseline:
-#
-#   GO_VERSION=1.28.0 ./scripts/setup.sh
-#
-# ---------------------------------------------------------------------------
+# .go-version is the only toolchain pin. Update it and the mirrored go.mod
+# together; make go-version-check rejects drift. Setup never rewrites the pin.
 
-readonly DEFAULT_GO_VERSION="1.27.2"
-readonly GO_VERSION="${GO_VERSION:-${DEFAULT_GO_VERSION}}"
-readonly GO_TOOLCHAIN="go${GO_VERSION}+auto"
-
-# Resolve the repository root robustly.
-#
-# Some coding-agent environments execute this script's contents through
-# "bash -c" or source it from stdin. In those cases BASH_SOURCE may be unset,
-# so the Git worktree is the authoritative location.
-if command -v git >/dev/null 2>&1; then
-    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+# Resolve this script's repository, including stdin execution by setup runners.
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+    REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+elif command -v git >/dev/null 2>&1; then
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 else
-    REPO_ROOT=""
+    REPO_ROOT="$(pwd -P)"
 fi
 
-if [[ -z "${REPO_ROOT}" ]]; then
-    if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
-        SCRIPT_DIR="$(
-            cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1
-            pwd -P
-        )"
-        REPO_ROOT="$(
-            cd -- "${SCRIPT_DIR}/.." >/dev/null 2>&1
-            pwd -P
-        )"
-    else
-        REPO_ROOT="$(pwd -P)"
-    fi
-fi
-
-[[ -n "${REPO_ROOT}" ]] || {
-    printf '[setup] ERROR: Unable to determine repository root.\n' >&2
+pinned_go_version="$(tr -d '[:space:]' < "${REPO_ROOT}/.go-version")"
+if [[ -n "${GO_VERSION:-}" && "${GO_VERSION}" != "${pinned_go_version}" ]]; then
+    echo "GO_VERSION must match .go-version; edit the repository pin instead." >&2
     exit 1
-}
+fi
+readonly GO_VERSION="${pinned_go_version}"
+readonly GO_TOOLCHAIN="go${GO_VERSION}"
+export GO_VERSION GO_TOOLCHAIN
+bash "${REPO_ROOT}/scripts/check-go-version.sh"
 
 log() {
     printf '[setup] %s\n' "$*"
@@ -74,8 +45,8 @@ normalize_go_version() {
     local version="$1"
 
     # Accept either:
-    #   1.27.2
-    #   go1.27.2
+    #   the version read from .go-version
+    # Toolchain version comes from .go-version.
     version="${version#go}"
 
     printf '%s\n' "${version}"
@@ -118,14 +89,8 @@ EOF
 configure_toolchain() {
     log "Configuring Go toolchain baseline: go${GO_VERSION}"
 
-    # Persist the baseline in Go's user-level environment.
-    #
-    # The +auto suffix is important:
-    #
-    #   * go1.27.2 is the minimum/default toolchain.
-    #   * repositories can require a newer toolchain later.
-    #   * an older bundled/system Go does not become the effective build
-    #     toolchain merely because it happens to be first in PATH.
+    # Persist the exact repository pin for shells launched after setup.
+    # Deliberately omit +auto so module operations cannot select a newer Go.
     go env -w "GOTOOLCHAIN=${GO_TOOLCHAIN}"
 
     # Also export it for this setup process so there is no ambiguity if the
@@ -133,27 +98,8 @@ configure_toolchain() {
     export GOTOOLCHAIN="${GO_TOOLCHAIN}"
 }
 
-sync_go_version_file() {
-    local version_file="${REPO_ROOT}/.go-version"
-
-    if [[ ! -f "${version_file}" ]]; then
-        log "Creating .go-version with ${GO_VERSION}"
-        printf '%s\n' "${GO_VERSION}" >"${version_file}"
-        return
-    fi
-
-    local configured
-    configured="$(
-        tr -d '[:space:]' <"${version_file}"
-    )"
-    configured="$(normalize_go_version "${configured}")"
-
-    if [[ "${configured}" != "${GO_VERSION}" ]]; then
-        log "Updating .go-version: ${configured} -> ${GO_VERSION}"
-        printf '%s\n' "${GO_VERSION}" >"${version_file}"
-    else
-        log ".go-version already specifies ${GO_VERSION}"
-    fi
+check_go_version_file() {
+    bash "${REPO_ROOT}/scripts/check-go-version.sh"
 }
 
 check_go_mod() {
@@ -191,62 +137,6 @@ check_go_mod() {
     # The effective development/build toolchain is controlled by GOTOOLCHAIN.
 }
 
-check_for_forced_local_toolchain() {
-    local found=0
-    local candidates=(
-        "${REPO_ROOT}/Makefile"
-        "${REPO_ROOT}/makefile"
-        "${REPO_ROOT}/GNUmakefile"
-        "${REPO_ROOT}/scripts"
-        "${REPO_ROOT}/.github"
-    )
-
-    local path
-
-    for path in "${candidates[@]}"; do
-        [[ -e "${path}" ]] || continue
-
-        if grep -R \
-            --exclude-dir=.git \
-            --exclude='*.md' \
-            --exclude='setup.sh' \
-            -n \
-            -E 'GOTOOLCHAIN[[:space:]]*=[[:space:]]*local|GOTOOLCHAIN=local' \
-            "${path}" \
-            >/dev/null 2>&1; then
-
-            found=1
-
-            warn "Repository contains GOTOOLCHAIN=local:"
-            grep -R \
-                --exclude-dir=.git \
-                --exclude='*.md' \
-                --exclude='setup.sh' \
-                -n \
-                -E 'GOTOOLCHAIN[[:space:]]*=[[:space:]]*local|GOTOOLCHAIN=local' \
-                "${path}" \
-                >&2 || true
-        fi
-    done
-
-    if [[ "${found}" -eq 1 ]]; then
-        cat >&2 <<EOF
-
-[setup] WARNING:
-GOTOOLCHAIN=local disables Go's automatic toolchain selection and can cause
-builds to report an obsolete system/bootstrap Go version.
-
-Replace those uses with either:
-
-    GOTOOLCHAIN=${GO_TOOLCHAIN}
-
-or preferably allow the environment configured by scripts/setup.sh to control
-toolchain selection.
-
-EOF
-    fi
-}
-
 download_toolchain() {
     log "Ensuring go${GO_VERSION} is available..."
 
@@ -268,28 +158,9 @@ verify_toolchain() {
 
     log "Effective Go toolchain: ${selected}"
 
-    local expected_prefix="go${GO_VERSION}"
+    local expected="go${GO_VERSION}"
+    [[ "${selected}" == "${expected}" ]] || die "Expected ${expected}, but Go selected ${selected}."
 
-    if [[ "${selected}" == "${expected_prefix}"* ]]; then
-        return
-    fi
-
-    # With +auto, a newer toolchain is valid if go.mod/go.work requires it.
-    #
-    # We therefore verify that the requested baseline itself is available,
-    # rather than incorrectly rejecting an intentional forward toolchain
-    # selection.
-    local baseline
-    baseline="$(
-        GOTOOLCHAIN="go${GO_VERSION}" go version 2>/dev/null |
-            awk '{print $3}'
-    )"
-
-    if [[ "${baseline}" != "${expected_prefix}"* ]]; then
-        die "Expected ${expected_prefix}, but Go selected ${baseline:-unknown}."
-    fi
-
-    log "Repository selected ${selected}; baseline ${expected_prefix} is installed."
 }
 
 prepare_dependencies() {
@@ -331,9 +202,8 @@ main() {
     fi
 
     configure_toolchain
-    sync_go_version_file
+    check_go_version_file
     check_go_mod
-    check_for_forced_local_toolchain
     download_toolchain
     verify_toolchain
     prepare_dependencies

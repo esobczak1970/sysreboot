@@ -36,48 +36,60 @@ const (
 	ActionHalt     = "halt"
 )
 
-// Enumeration for index mapping of the flags (must match appFlags order)
-const (
-	cancelIndex = iota
-	confirmIndex
-	confirmTimeoutIndex
-	delayIndex
-	haltIndex
-	messageIndex
-	poweroffIndex
-	rebootIndex
-	shutdownIndex
-	statusIndex
-	timeIndex
-	verboseIndex
-	versionIndex
+// Command-line flags
+var (
+	flagCancel         bool
+	flagConfirm        bool
+	flagConfirmTimeout int
+	flagDelay          int
+	flagHalt           bool
+	flagMessage        string
+	flagPoweroff       bool
+	flagReboot         bool
+	flagShutdown       bool
+	flagStatus         bool
+	flagTime           string
+	flagVerbose        bool
+	flagVersion        bool
 )
 
-// flagData defines the structure for command-line flag information.
-type flagData struct {
-	longName   string      // Long form of the flag.
-	shortName  string      // Short form of the flag (single letter).
-	value      interface{} // Variable that stores the flag's value.
-	defaultVal interface{} // Default value of the flag.
-	usage      string      // Description of the flag.
+var execCmdFunc = exec.CommandContext
+
+func resolveExecutable(name string) (string, error) {
+	return resolveExecutableInternal(name, runtime.GOOS)
 }
 
-// appFlags holds the configuration for all command-line flags.
-// IMPORTANT: Order must match the index constants above
-var appFlags = []flagData{
-	{"cancel", "x", new(bool), false, "Cancel a pending scheduled action."},
-	{"confirm", "c", new(bool), false, "Require confirmation before performing the action."},
-	{"confirm-timeout", "ct", new(int), 10, "Confirmation timeout in seconds."},
-	{"delay", "d", new(int), 0, "Delay in minutes before performing the action."},
-	{"halt", "h", new(bool), false, "Halt the machine."},
-	{"message", "m", new(string), "", "Message to send to all users before performing the action."},
-	{"poweroff", "p", new(bool), false, "Power-off the machine."},
-	{"reboot", "r", new(bool), true, "Reboot the machine (default action)."},
-	{"shutdown", "s", new(bool), false, "Shutdown the machine (alias for poweroff)."},
-	{"status", "st", new(bool), false, "Show status of pending scheduled actions."},
-	{"time", "t", new(string), "", "Specific time for the action in HH:MM format (24-hour)."},
-	{"verbose", "vb", new(bool), false, "Output more information."},
-	{"version", "v", new(bool), false, "Show application version."},
+func resolveExecutableInternal(name string, goos string) (string, error) {
+	var searchPaths []string
+
+	switch name {
+	case "systemctl":
+		searchPaths = []string{"/usr/bin/systemctl", "/bin/systemctl"}
+	case "shutdown":
+		if goos == "windows" {
+			sysDir, err := trustedWindowsSystemDirectory()
+			if err != nil {
+				return "", err
+			}
+			searchPaths = []string{filepath.Join(sysDir, "shutdown.exe")}
+		} else {
+			searchPaths = []string{"/sbin/shutdown", "/usr/sbin/shutdown"}
+		}
+	case "halt":
+		searchPaths = []string{"/sbin/halt", "/usr/sbin/halt"}
+	case "wall":
+		searchPaths = []string{"/usr/bin/wall", "/bin/wall"}
+	default:
+		return "", fmt.Errorf("untrusted executable: %s", name)
+	}
+
+	for _, p := range searchPaths {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
+		}
+	}
+
+	return "", fmt.Errorf("executable not found in trusted locations: %s", name)
 }
 
 var (
@@ -86,6 +98,18 @@ var (
 	logWriter io.WriteCloser
 	osExit    = os.Exit // Injectable exit function for testing
 )
+
+// processController exposes only the operations needed for cancellation.
+// The lookup seam allows tests to simulate signal and kill failures without
+// sending signals to a real process or changing standard library globals.
+type processController interface {
+	Signal(os.Signal) error
+	Kill() error
+}
+
+var findProcessFunc = func(pid int) (processController, error) {
+	return os.FindProcess(pid)
+}
 
 // Constants for PID file management
 const (
@@ -112,20 +136,44 @@ type ScheduleInfo struct {
 }
 
 func initFlags() {
-	// Initialize command-line flags based on appFlags configuration.
-	for _, fd := range appFlags {
-		switch v := fd.value.(type) {
-		case *bool:
-			flag.BoolVar(v, fd.longName, fd.defaultVal.(bool), fd.usage)
-			flag.BoolVar(v, fd.shortName, fd.defaultVal.(bool), fd.usage+" (short form)")
-		case *int:
-			flag.IntVar(v, fd.longName, fd.defaultVal.(int), fd.usage)
-			flag.IntVar(v, fd.shortName, fd.defaultVal.(int), fd.usage+" (short form)")
-		case *string:
-			flag.StringVar(v, fd.longName, fd.defaultVal.(string), fd.usage)
-			flag.StringVar(v, fd.shortName, fd.defaultVal.(string), fd.usage+" (short form)")
-		}
-	}
+	flag.BoolVar(&flagCancel, "cancel", false, "Cancel a pending scheduled action.")
+	flag.BoolVar(&flagCancel, "x", false, "Cancel a pending scheduled action. (short form)")
+
+	flag.BoolVar(&flagConfirm, "confirm", false, "Require confirmation before performing the action.")
+	flag.BoolVar(&flagConfirm, "c", false, "Require confirmation before performing the action. (short form)")
+
+	flag.IntVar(&flagConfirmTimeout, "confirm-timeout", 10, "Confirmation timeout in seconds.")
+	flag.IntVar(&flagConfirmTimeout, "ct", 10, "Confirmation timeout in seconds. (short form)")
+
+	flag.IntVar(&flagDelay, "delay", 0, "Delay in minutes before performing the action.")
+	flag.IntVar(&flagDelay, "d", 0, "Delay in minutes before performing the action. (short form)")
+
+	flag.BoolVar(&flagHalt, "halt", false, "Halt the machine.")
+	flag.BoolVar(&flagHalt, "h", false, "Halt the machine. (short form)")
+
+	flag.StringVar(&flagMessage, "message", "", "Message to send to all users before performing the action.")
+	flag.StringVar(&flagMessage, "m", "", "Message to send to all users before performing the action. (short form)")
+
+	flag.BoolVar(&flagPoweroff, "poweroff", false, "Power-off the machine.")
+	flag.BoolVar(&flagPoweroff, "p", false, "Power-off the machine. (short form)")
+
+	flag.BoolVar(&flagReboot, "reboot", true, "Reboot the machine (default action).")
+	flag.BoolVar(&flagReboot, "r", true, "Reboot the machine (default action). (short form)")
+
+	flag.BoolVar(&flagShutdown, "shutdown", false, "Shutdown the machine (alias for poweroff).")
+	flag.BoolVar(&flagShutdown, "s", false, "Shutdown the machine (alias for poweroff). (short form)")
+
+	flag.BoolVar(&flagStatus, "status", false, "Show status of pending scheduled actions.")
+	flag.BoolVar(&flagStatus, "st", false, "Show status of pending scheduled actions. (short form)")
+
+	flag.StringVar(&flagTime, "time", "", "Specific time for the action in HH:MM format (24-hour).")
+	flag.StringVar(&flagTime, "t", "", "Specific time for the action in HH:MM format (24-hour). (short form)")
+
+	flag.BoolVar(&flagVerbose, "verbose", false, "Output more information.")
+	flag.BoolVar(&flagVerbose, "vb", false, "Output more information. (short form)")
+
+	flag.BoolVar(&flagVersion, "version", false, "Show application version.")
+	flag.BoolVar(&flagVersion, "v", false, "Show application version. (short form)")
 }
 
 func init() {
@@ -138,7 +186,7 @@ func init() {
 func initLogger() {
 	// Set up the log file location and initialize the logger.
 	logFile = filepath.Join(getLogFileDirectory(), appName+".log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatalf("Error opening log file: %v", err)
 	}
@@ -147,8 +195,12 @@ func initLogger() {
 }
 
 func getLogFileDirectory() string {
+	return getLogFileDirectoryInternal(runtime.GOOS)
+}
+
+func getLogFileDirectoryInternal(goos string) string {
 	// Get the appropriate log file directory based on the operating system.
-	if runtime.GOOS == "windows" {
+	if goos == "windows" {
 		appData := os.Getenv("APPDATA")
 		if appData == "" {
 			appData = "."
@@ -198,25 +250,17 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	// Set up signal handling for cancellation
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 	// Wait for either the scheduled time or a signal
 	timer := time.NewTimer(durationUntilReboot)
 	select {
 	case <-timer.C:
 		// Time reached, proceed with action
 		executeAction(action, message, confirmation)
-	case sig := <-sigChan:
-		// Signal received, cancel action
-		timer.Stop()
-		fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-		logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-		return nil
 	case <-ctx.Done():
-		// Context cancelled
+		// Context cancelled or signal received
 		timer.Stop()
+		fmt.Printf("\nCancelling scheduled action.\n")
+		logger.Printf("Cancelled %s action due to context cancellation\n", action)
 		return nil
 	}
 
@@ -224,10 +268,20 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 }
 
 func sendWallMessage(message string) error {
+	return sendWallMessageInternal(message, runtime.GOOS)
+}
+
+func sendWallMessageInternal(message string, goos string) error {
 	// Send a message to all users on the system using the 'wall' command (Unix-like systems only).
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if goos != "linux" && goos != "darwin" {
 		logVerbose("Wall message feature is not supported on this OS.")
-		return fmt.Errorf("wall not supported on %s", runtime.GOOS)
+		return fmt.Errorf("wall not supported on %s", goos)
+	}
+
+	wallPath, err := resolveExecutableInternal("wall", goos)
+	if err != nil {
+		logger.Printf("Warning: failed to resolve wall command: %v", err)
+		return err
 	}
 
 	logVerbose("Sending wall message: " + message)
@@ -235,7 +289,9 @@ func sendWallMessage(message string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "wall", message)
+	cmd := execCmdFunc(ctx, wallPath, message)
+	// Do not inherit untrusted environment variables for high-privilege execution
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
 	if err := cmd.Run(); err != nil {
 		logger.Printf("Failed to send wall message: %v\n", err)
 		return err
@@ -269,7 +325,7 @@ func executeAction(action string, message string, confirmation bool) {
 func confirmAction() bool {
 	// Prompt the user for confirmation before proceeding with an action.
 	fmt.Print("Are you sure you want to proceed with the action? (y/n): ")
-	timeout := getFlagInt(confirmTimeoutIndex)
+	timeout := flagConfirmTimeout
 	timer := time.NewTimer(time.Duration(timeout) * time.Second)
 	responseChan := make(chan string, 1)
 
@@ -302,19 +358,30 @@ func confirmAction() bool {
 }
 
 func executeSystemCommand(action string) error {
-	// Execute the system command associated with the specified action.
-	var cmd *exec.Cmd
+	return executeSystemCommandInternal(action, runtime.GOOS)
+}
 
-	switch runtime.GOOS {
+func executeSystemCommandInternal(action string, goos string) error {
+	if action != ActionReboot && action != ActionPoweroff && action != ActionHalt {
+		return fmt.Errorf("unsupported action: %s", action)
+	}
+	// Execute the system command associated with the specified action.
+	var cmdName string
+	var cmdArgs []string
+
+	switch goos {
 	case "linux":
 		// Use systemctl for modern Linux systems
-		cmd = exec.Command("systemctl", action)
+		cmdName = "systemctl"
+		cmdArgs = []string{action}
 	case "windows":
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "/r", "/t", "0")
+			cmdName = "shutdown"
+			cmdArgs = []string{"/r", "/t", "0"}
 		case ActionPoweroff, ActionHalt:
-			cmd = exec.Command("shutdown", "/s", "/t", "0")
+			cmdName = "shutdown"
+			cmdArgs = []string{"/s", "/t", "0"}
 		default:
 			return fmt.Errorf("unsupported action for Windows: %s", action)
 		}
@@ -326,22 +393,40 @@ func executeSystemCommand(action string) error {
 
 		switch action {
 		case ActionReboot:
-			cmd = exec.Command("shutdown", "-r", "now")
+			cmdName = "shutdown"
+			cmdArgs = []string{"-r", "now"}
 		case ActionPoweroff:
-			cmd = exec.Command("shutdown", "-h", "now")
+			cmdName = "shutdown"
+			cmdArgs = []string{"-h", "now"}
 		case ActionHalt:
-			cmd = exec.Command("halt")
+			cmdName = "halt"
+			// macOS halt takes no arguments for immediate halt typically, but keeping parity
+			cmdArgs = []string{}
 		default:
 			return fmt.Errorf("unsupported action for macOS: %s", action)
 		}
 	default:
-		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+		return fmt.Errorf("unsupported operating system: %s", goos)
+	}
+
+	execPath, err := resolveExecutableInternal(cmdName, goos)
+	if err != nil {
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	cmd = exec.CommandContext(ctx, cmd.Path, cmd.Args[1:]...)
+	cmd := execCmdFunc(ctx, execPath, cmdArgs...)
+	// Do not inherit untrusted environment variables for high-privilege execution
+	cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}
+
+	if goos == "windows" {
+		sysDir := filepath.Dir(filepath.Dir(execPath))
+		if sysDir != "" {
+			cmd.Env = append(cmd.Env, "SystemRoot="+sysDir)
+		}
+	}
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -352,14 +437,9 @@ func executeSystemCommand(action string) error {
 	return nil
 }
 
-func getFlagInt(index int) int {
-	// Retrieve an integer value from the appFlags based on the index.
-	return *(appFlags[index].value.(*int))
-}
-
 func logVerbose(message string) {
 	// Log a message if verbose output is enabled.
-	if *(appFlags[verboseIndex].value.(*bool)) {
+	if flagVerbose {
 		logger.Println(message)
 		fmt.Println(message)
 	}
@@ -367,6 +447,10 @@ func logVerbose(message string) {
 
 // getPIDFilePath returns the path to the PID file
 func getPIDFilePath() string {
+	return getPIDFilePathInternal(runtime.GOOS)
+}
+
+func getPIDFilePathInternal(goos string) string {
 	// Tests can override the path without affecting the cached production path.
 	if pidFileDirOverride != "" {
 		return filepath.Join(pidFileDirOverride, pidFileName)
@@ -374,7 +458,7 @@ func getPIDFilePath() string {
 
 	pidFilePathOnce.Do(func() {
 		// Try primary location first.
-		if runtime.GOOS != "windows" {
+		if goos != "windows" {
 			cachedPIDFilePath = filepath.Join(pidFileDir, pidFileName)
 			return
 		}
@@ -474,9 +558,13 @@ func setupPIDFile(scheduleInfo ScheduleInfo) func() {
 
 // processExists checks if a process with the given PID exists
 func processExists(pid int) bool {
+	return processExistsInternal(pid, runtime.GOOS)
+}
+
+func processExistsInternal(pid int, goos string) bool {
 	// On Unix systems, we can send signal 0 to check if process exists
-	if runtime.GOOS != "windows" {
-		process, err := os.FindProcess(pid)
+	if goos != "windows" {
+		process, err := findProcessFunc(pid)
 		if err != nil {
 			return false
 		}
@@ -486,7 +574,7 @@ func processExists(pid int) bool {
 
 	// On Windows, try to open the process
 	// This is a simplified check
-	process, err := os.FindProcess(pid)
+	process, err := findProcessFunc(pid)
 	return err == nil && process != nil
 }
 
@@ -506,14 +594,14 @@ func cancelScheduledAction() error {
 		return fmt.Errorf("no active scheduled action found (stale PID file removed)")
 	}
 
-	// Send SIGTERM to the process
-	process, err := os.FindProcess(info.PID)
+	// Send SIGINT to the process
+	process, err := findProcessFunc(info.PID)
 	if err != nil {
 		return fmt.Errorf("failed to find process: %v", err)
 	}
 
 	if err := process.Signal(os.Interrupt); err != nil {
-		// Try SIGKILL if SIGTERM fails
+		// Try SIGKILL if SIGINT fails
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process: %v", err)
 		}
@@ -573,21 +661,21 @@ func cleanup() {
 }
 
 func main() {
-	initLogger()
-	defer cleanup()
-
 	// Parse the command-line flags.
 	flag.Parse()
 
 	// Display version information if the version flag is set and exit.
-	if *appFlags[versionIndex].value.(*bool) {
+	if flagVersion {
 		fmt.Printf("%s version %s\n", appName, appVersion)
 		osExit(0)
 		return
 	}
 
+	initLogger()
+	defer cleanup()
+
 	// Handle status flag
-	if *appFlags[statusIndex].value.(*bool) {
+	if flagStatus {
 		if err := showScheduleStatus(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			osExit(1)
@@ -598,13 +686,39 @@ func main() {
 	}
 
 	// Handle cancel flag
-	if *appFlags[cancelIndex].value.(*bool) {
+	if flagCancel {
 		if err := cancelScheduledAction(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			osExit(1)
 			return
 		}
 		osExit(0)
+		return
+	}
+
+	// Determine the action to take based on flags provided by the user.
+	action := ActionReboot // Default action is to reboot.
+	conflictingFlags := 0
+
+	if flagHalt {
+		action = ActionHalt
+		conflictingFlags++
+	}
+	if flagPoweroff {
+		action = ActionPoweroff
+		conflictingFlags++
+	}
+	if flagShutdown {
+		action = ActionPoweroff
+		conflictingFlags++
+	}
+	if flagReboot && conflictingFlags > 0 {
+		conflictingFlags++
+	}
+
+	if conflictingFlags > 1 {
+		fmt.Fprintf(os.Stderr, "Error: Multiple conflicting actions specified. Choose only one.\n")
+		osExit(1)
 		return
 	}
 
@@ -616,47 +730,23 @@ func main() {
 		return
 	}
 
-	// Determine the action to take based on flags provided by the user.
-	action := ActionReboot // Default action is to reboot.
-	conflictingFlags := 0
-
-	if *(appFlags[haltIndex].value.(*bool)) {
-		action = ActionHalt
-		conflictingFlags++
-	}
-	if *(appFlags[poweroffIndex].value.(*bool)) {
-		action = ActionPoweroff
-		conflictingFlags++
-	}
-	if *(appFlags[shutdownIndex].value.(*bool)) {
-		action = ActionPoweroff
-		conflictingFlags++
-	}
-	if *(appFlags[rebootIndex].value.(*bool)) && conflictingFlags > 0 {
-		conflictingFlags++
-	}
-
-	if conflictingFlags > 1 {
-		fmt.Fprintf(os.Stderr, "Error: Multiple conflicting actions specified. Choose only one.\n")
-		osExit(1)
-		return
-	}
-
 	// Handle scheduled time if provided.
-	ctx := context.Background()
-	if *(appFlags[timeIndex].value.(*string)) != "" {
-		handleScheduledTime(ctx, *(appFlags[timeIndex].value.(*string)), action)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if flagTime != "" {
+		handleScheduledTime(ctx, flagTime, action)
 		return
 	}
 
 	// Proceed with a delayed action if a delay is specified.
-	handleDelay(ctx, *(appFlags[delayIndex].value.(*int)), action)
+	handleDelay(ctx, flagDelay, action)
 }
 
 // handleScheduledTime schedules an action at a specific time.
 func handleScheduledTime(ctx context.Context, timeStr, action string) {
-	message := *(appFlags[messageIndex].value.(*string))
-	confirmation := *(appFlags[confirmIndex].value.(*bool))
+	message := flagMessage
+	confirmation := flagConfirm
 
 	// Write PID file for scheduled action
 	scheduleInfo := ScheduleInfo{
@@ -677,8 +767,8 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 
 // handleDelay sets a delay before executing an action.
 func handleDelay(ctx context.Context, delay int, action string) {
-	message := *(appFlags[messageIndex].value.(*string))
-	confirmation := *(appFlags[confirmIndex].value.(*bool))
+	message := flagMessage
+	confirmation := flagConfirm
 
 	// Log and wait if a delay is set, then execute the action.
 	if delay > 0 {
@@ -691,10 +781,6 @@ func handleDelay(ctx context.Context, delay int, action string) {
 
 		defer setupPIDFile(scheduleInfo)()
 
-		// Set up signal handling for cancellation
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
@@ -704,15 +790,11 @@ func handleDelay(ctx context.Context, delay int, action string) {
 		select {
 		case <-timer.C:
 			// Delay completed, proceed with action
-		case sig := <-sigChan:
-			// Signal received, cancel action
-			timer.Stop()
-			fmt.Printf("\nReceived signal %v, cancelling scheduled action.\n", sig)
-			logger.Printf("Cancelled %s action due to signal %v\n", action, sig)
-			return
 		case <-ctx.Done():
-			// Context cancelled
+			// Context cancelled or signal received
 			timer.Stop()
+			fmt.Printf("\nCancelling scheduled action.\n")
+			logger.Printf("Cancelled %s action due to context cancellation\n", action)
 			return
 		}
 	}
