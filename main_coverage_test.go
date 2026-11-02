@@ -9,8 +9,78 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
+
+func TestHandleDelay_TimerExpires(t *testing.T) {
+	setupTestLogger()
+
+	// Preserve mutable package state.
+	originalPIDDir := pidFileDirOverride
+	originalExit := osExit
+	originalMessage := flagMessage
+	originalConfirm := flagConfirm
+
+	t.Cleanup(func() {
+		pidFileDirOverride = originalPIDDir
+		osExit = originalExit
+		flagMessage = originalMessage
+		flagConfirm = originalConfirm
+	})
+
+	// Keep PID-file operations confined to this test.
+	pidFileDirOverride = t.TempDir()
+	flagMessage = ""
+	flagConfirm = false
+
+	// Intercept os.Exit so the test process cannot terminate.
+	exitCode := -1
+	osExit = func(code int) {
+		exitCode = code
+	}
+
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+
+		// Use an unsupported action. executeSystemCommandInternal
+		// rejects it before attempting any operating-system command.
+		//
+		// The one-minute timer advances using the virtual clock.
+		handleDelay(
+			context.Background(),
+			1,
+			"invalid-test-action",
+		)
+
+		if elapsed := time.Since(start); elapsed != time.Minute {
+			t.Errorf(
+				"virtual elapsed time = %v, want %v",
+				elapsed,
+				time.Minute,
+			)
+		}
+	})
+
+	// Proves handleDelay passed the timer's success branch and
+	// reached executeAction's unsupported-action error handling.
+	if exitCode != 1 {
+		t.Errorf(
+			"exit code = %d, want 1 after timer expiration",
+			exitCode,
+		)
+	}
+
+	// Verify that the deferred PID-file cleanup ran.
+	pidPath := filepath.Join(pidFileDirOverride, pidFileName)
+
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf(
+			"PID file should be removed after delay expiration; stat error: %v",
+			err,
+		)
+	}
+}
 
 func TestInitLogger_Failure_Subprocess(t *testing.T) {
 	if os.Getenv("TEST_INIT_LOGGER_FAILURE") == "1" {
