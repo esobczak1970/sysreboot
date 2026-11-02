@@ -433,3 +433,139 @@ func TestMain_Coverage_TimeAndDelay(t *testing.T) {
 		}
 	})
 }
+
+func TestExecuteSystemCommandInternal_WindowsUnsupported2(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+
+	orig := execCmdFunc
+	defer func() { execCmdFunc = orig }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	err := executeSystemCommandInternal("invalid", "windows")
+	if err == nil {
+		t.Errorf("Expected error for unsupported action on Windows")
+	}
+}
+
+func TestGetPIDFilePathInternal_WindowsFallbackToHomeDir2(t *testing.T) {
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("APPDATA", "")
+	t.Setenv("USERPROFILE", t.TempDir()) // Ensure UserHomeDir succeeds
+
+	defer func() { pidFilePathOnce = *new(sync.Once) }()
+	pidFilePathOnce = *new(sync.Once)
+
+	path := getPIDFilePathInternal("windows")
+	if path == "" {
+		t.Errorf("expected path, got empty")
+	}
+}
+
+func TestProcessExistsInternal_UnixError(t *testing.T) {
+	origFind := findProcessFunc
+	defer func() { findProcessFunc = origFind }()
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessController{
+			signalFunc: func(sig os.Signal) error {
+				return fmt.Errorf("signal err")
+			},
+		}, nil
+	}
+
+	exists := processExistsInternal(1234, "linux")
+	if exists {
+		t.Errorf("Expected false")
+	}
+}
+
+func TestCancelScheduledAction_KillFails(t *testing.T) {
+	setupTestLogger()
+
+	info := ScheduleInfo{PID: 1234567, Action: ActionReboot}
+	data, _ := json.Marshal(info)
+
+	dir := t.TempDir()
+	pidFileDirOverride = dir
+	defer func() { pidFileDirOverride = "" }()
+
+	pidPath := getPIDFilePath()
+	_ = os.WriteFile(pidPath, data, 0644)
+
+	origFind := findProcessFunc
+	defer func() { findProcessFunc = origFind }()
+	findProcessFunc = func(pid int) (processController, error) {
+		return &mockProcessController{
+			signalFunc: func(sig os.Signal) error {
+				if sig != os.Interrupt {
+					return nil // process exists for Signal(0)
+				}
+				return fmt.Errorf("signal err")
+			},
+			killFunc: func() error { return fmt.Errorf("kill err") },
+		}, nil
+	}
+
+	err := cancelScheduledAction()
+	if err == nil || err.Error() != "failed to kill process: kill err" {
+		t.Errorf("expected failed to kill process error, got: %v", err)
+	}
+}
+
+func TestMain_Coverage_MultipleFlags(t *testing.T) {
+	isolateUserLog(t)
+	setupTestLogger()
+
+	oldOsExit := osExit
+	defer func() { osExit = oldOsExit }()
+	var exitCode int
+	osExit = func(code int) { exitCode = code }
+
+	t.Run("multiple_flags", func(t *testing.T) {
+		resetFlags()
+		flagHalt = true
+		flagPoweroff = true
+		exitCode = -1
+		main()
+		if exitCode != 1 {
+			t.Errorf("expected exit code 1, got %d", exitCode)
+		}
+	})
+
+	t.Run("cancel_success", func(t *testing.T) {
+		resetFlags()
+		flagCancel = true
+		exitCode = -1
+
+		info := ScheduleInfo{PID: 1234567, Action: ActionReboot}
+		data, _ := json.Marshal(info)
+
+		dir := t.TempDir()
+		pidFileDirOverride = dir
+		defer func() { pidFileDirOverride = "" }()
+
+		pidPath := getPIDFilePath()
+		_ = os.WriteFile(pidPath, data, 0644)
+
+		origFind := findProcessFunc
+		defer func() { findProcessFunc = origFind }()
+		findProcessFunc = func(pid int) (processController, error) {
+			return &mockProcessController{
+				signalFunc: func(sig os.Signal) error {
+					if sig == os.Interrupt {
+						return nil // process exists
+					}
+					return nil
+				},
+				killFunc: func() error { return nil },
+			}, nil
+		}
+
+		main()
+		if exitCode != 0 {
+			t.Errorf("expected exit code 0, got %d", exitCode)
+		}
+	})
+}
