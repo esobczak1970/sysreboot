@@ -135,5 +135,16 @@ The uncovered code consists primarily of:
 
 This represents a **high-quality, production-ready test suite** with thorough coverage of all testable code paths.
 
-## 2024-X-X Coverage Update
-Dependencies were updated and test coverage increased to 91.2%. The remaining uncovered statements are explicitly untestable without modifying global process/system state (e.g. `os.Geteuid() != 0`, operating-system blocks that cannot run concurrently on the same runner). These exclusions are expected per `AGENTS.md` guidelines that prioritize safety and structural soundness over artificial 100% test coverage metrics.
+## Windows command regression coverage
+
+Non-Windows test hosts now exercise Windows command resolution with a scoped
+trusted-directory fixture. The tests assert command paths, action arguments,
+sanitized environments, subprocess errors, and lookup failures using the
+existing harmless child-process helper. They never invoke the fixture's
+shutdown executable. Native Windows execution still requires a Windows host;
+cross-compilation alone does not establish runtime compatibility.
+
+The Windows trusted-directory lookup now exposes the same internal test seam
+as other platforms while retaining its OS KnownDLL implementation. Windows
+test-binary compilation and vet checks cover the platform-specific code; they
+do not replace native Windows runtime tests.
