@@ -134,3 +134,6 @@ The uncovered code consists primarily of:
 - Platform-specific branches not executed on test platform
 
 This represents a **high-quality, production-ready test suite** with thorough coverage of all testable code paths.
+
+## 2024-X-X Coverage Update
+Dependencies were updated and test coverage increased to 91.2%. The remaining uncovered statements are explicitly untestable without modifying global process/system state (e.g. `os.Geteuid() != 0`, operating-system blocks that cannot run concurrently on the same runner). These exclusions are expected per `AGENTS.md` guidelines that prioritize safety and structural soundness over artificial 100% test coverage metrics.

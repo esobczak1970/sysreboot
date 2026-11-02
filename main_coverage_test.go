@@ -363,3 +363,76 @@ func TestMain_Coverage_TimeAndDelay(t *testing.T) {
 		}
 	})
 }
+
+func TestExecuteSystemCommandInternal_WindowsHalt(t *testing.T) {
+	orig := execCmdFunc
+	defer func() { execCmdFunc = orig }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	orig2 := trustedWindowsSystemDirectory
+	defer func() { trustedWindowsSystemDirectory = orig2 }()
+	trustedWindowsSystemDirectory = func() (string, error) {
+		dir := t.TempDir()
+		sysDir := filepath.Join(dir, "System32")
+		_ = os.MkdirAll(sysDir, 0755)
+		_ = os.WriteFile(filepath.Join(sysDir, "shutdown.exe"), []byte(""), 0755)
+		return sysDir, nil
+	}
+
+	_ = executeSystemCommandInternal(ActionHalt, "windows")
+}
+
+func TestExecuteSystemCommandInternal_DarwinHalt(t *testing.T) {
+	orig := execCmdFunc
+	defer func() { execCmdFunc = orig }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	_ = executeSystemCommandInternal(ActionHalt, "darwin")
+}
+
+func TestExecuteSystemCommandInternal_DarwinReboot(t *testing.T) {
+	orig := execCmdFunc
+	defer func() { execCmdFunc = orig }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	_ = executeSystemCommandInternal(ActionReboot, "darwin")
+}
+
+func TestExecuteSystemCommandInternal_DarwinPoweroff(t *testing.T) {
+	orig := execCmdFunc
+	defer func() { execCmdFunc = orig }()
+	execCmdFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	}
+
+	_ = executeSystemCommandInternal(ActionPoweroff, "darwin")
+}
+
+func TestExecuteSystemCommandInternal_WindowsUnsupported2(t *testing.T) {
+	err := executeSystemCommandInternal("invalid", "windows")
+	if err == nil {
+		t.Errorf("expected error")
+	}
+}
+
+func TestExecuteSystemCommandInternal_DarwinUnsupported2(t *testing.T) {
+	err := executeSystemCommandInternal("invalid", "darwin")
+	if err == nil {
+		t.Errorf("expected error")
+	}
+}
+
+// Test processExistsInternal OS cases directly
+func TestProcessExistsInternal_Direct(t *testing.T) {
+	// These are typically covered but ensuring full branch coverage
+	_ = processExistsInternal(os.Getpid(), "linux")
+	_ = processExistsInternal(os.Getpid(), "windows")
+	_ = processExistsInternal(999999, "linux")
+	_ = processExistsInternal(999999, "windows")
+}
