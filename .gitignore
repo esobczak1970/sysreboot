@@ -87,3 +87,9 @@ cache/
 data/
 dist/
 node_modules/
+
+# Terraform local state and generated working directories
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.d/
