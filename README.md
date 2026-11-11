@@ -42,8 +42,14 @@ make test
 make test-race
 make coverage
 make lint
+make modernize-check
 make check
 \`\`\`
+
+`make modernize-check` invokes `go fix -diff ./...` with the pinned Go
+version and reports modernization suggestions without changing the source.
+Review any proposed changes before applying `go fix ./...`, then rerun the
+canonical checks.
 
 ## Documentation
 
