@@ -92,11 +92,13 @@ golangci-lint-bin: doctor
 	if [[ ! -x "$(GOLANGCI_LINT_BIN)" ]]; then rebuild=1; else \
 	  installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
 	  built_go="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
-	  [[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || rebuild=1; fi; \
-	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(dir $(GOLANGCI_LINT_BIN))" $(GO_RUN) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
+	  built_cgo="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk '$$1 == "build" && $$2 ~ /^CGO_ENABLED=/ {sub(/^CGO_ENABLED=/, "", $$2); print $$2; exit}')"; \
+	  [[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" && "$$built_cgo" == "0" ]] || rebuild=1; fi; \
+	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(dir $(GOLANGCI_LINT_BIN))" CGO_ENABLED=0 $(GO_RUN) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
 	installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
 	built_go="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
-	[[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || { echo "golangci-lint verification failed: expected $$expected built with $$current_go, got $$installed built with $$built_go." >&2; exit 1; }
+	built_cgo="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk '$$1 == "build" && $$2 ~ /^CGO_ENABLED=/ {sub(/^CGO_ENABLED=/, "", $$2); print $$2; exit}')"; \
+	[[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" && "$$built_cgo" == "0" ]] || { echo "golangci-lint verification failed: expected $$expected built with $$current_go, got $$installed built with $$built_go." >&2; exit 1; }
 
 lint: golangci-lint-bin
 	GOTOOLCHAIN="$(GO_TOOLCHAIN)" "$(GOLANGCI_LINT_BIN)" run --timeout="$(GOLANGCI_LINT_TIMEOUT)" $(PKGS)
