@@ -28,7 +28,7 @@ Examples:
 ./bin/sysreboot --cancel
 \`\`\`
 
-The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges.
+The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges. Cancellation validates the scheduled PID and sends an interrupt rather than forcibly killing the process if interrupt fails. An unsuccessful interrupt leaves the PID file in place for investigation; inspect stale schedules before retrying because operating systems may reuse process IDs.
 
 Help and version commands run without opening the user log. Tests isolate user
 logs and never execute real reboot or shutdown actions.
