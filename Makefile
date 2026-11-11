@@ -23,7 +23,9 @@ COVERAGE_FILE ?= coverage.out
 GOLANGCI_LINT_VERSION ?= v2.14.0
 GOLANGCI_LINT_MODULE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 GOLANGCI_LINT_TIMEOUT ?= 5m
-GOLANGCI_LINT_BIN ?= $(BIN_DIR)/golangci-lint
+GO_TOOLS_CACHE_ROOT ?= $(HOME)/.cache/go-tools
+# Reuse pinned binaries across repositories with matching Go and platform.
+GOLANGCI_LINT_BIN ?= $(GO_TOOLS_CACHE_ROOT)/golangci-lint/$(GOLANGCI_LINT_VERSION)/go$(GO_VERSION)/$(shell $(GO) env GOOS)-$(shell $(GO) env GOARCH)/golangci-lint
 GO_TEST_FLAGS ?=
 PKGS ?= ./...
 
@@ -85,13 +87,13 @@ golangci-lint-bin: doctor
 	  v2.*) ;; \
 	  *) echo "GOLANGCI_LINT_VERSION must remain on v2.x; do not downgrade to v1." >&2; exit 1 ;; \
 	esac
-	@mkdir -p "$(BIN_DIR)"
+	@mkdir -p "$(dir $(GOLANGCI_LINT_BIN))"
 	@expected="$(GOLANGCI_LINT_VERSION)"; expected="$${expected#v}"; current_go="$$($(GO_RUN) env GOVERSION)"; rebuild=0; \
 	if [[ ! -x "$(GOLANGCI_LINT_BIN)" ]]; then rebuild=1; else \
 	  installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
 	  built_go="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
 	  [[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || rebuild=1; fi; \
-	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(BIN_DIR)" $(GO_RUN) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
+	if [[ $$rebuild -eq 1 ]]; then echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION) with $$current_go..."; GOBIN="$(dir $(GOLANGCI_LINT_BIN))" $(GO_RUN) install $(GOLANGCI_LINT_MODULE)@$(GOLANGCI_LINT_VERSION); fi; \
 	installed="$$($(GOLANGCI_LINT_BIN) --version | awk '{for (i=1;i<=NF;i++) if ($$i=="version") {print $$(i+1); exit}}')"; \
 	built_go="$$($(GO_RUN) version -m "$(GOLANGCI_LINT_BIN)" | awk 'NR==1 {print $$2}')"; \
 	[[ "$$installed" == "$$expected" && "$$built_go" == "$$current_go" ]] || { echo "golangci-lint verification failed: expected $$expected built with $$current_go, got $$installed built with $$built_go." >&2; exit 1; }
