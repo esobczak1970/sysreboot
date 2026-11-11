@@ -104,7 +104,6 @@ var (
 // sending signals to a real process or changing standard library globals.
 type processController interface {
 	Signal(os.Signal) error
-	Kill() error
 }
 
 var findProcessFunc = func(pid int) (processController, error) {
@@ -532,6 +531,11 @@ func readPIDFile() (*ScheduleInfo, error) {
 	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, fmt.Errorf("failed to parse PID file: %v", err)
 	}
+	// A nonpositive PID (and PID 1 on Unix) must never reach process signaling.
+	// In particular, on Unix a negative PID can target a process group.
+	if info.PID <= 1 {
+		return nil, fmt.Errorf("invalid scheduled process PID: %d", info.PID)
+	}
 
 	return &info, nil
 }
@@ -562,6 +566,9 @@ func processExists(pid int) bool {
 }
 
 func processExistsInternal(pid int, goos string) bool {
+	if pid <= 1 {
+		return false
+	}
 	// On Unix systems, we can send signal 0 to check if process exists
 	if goos != "windows" {
 		process, err := findProcessFunc(pid)
@@ -601,10 +608,10 @@ func cancelScheduledAction() error {
 	}
 
 	if err := process.Signal(os.Interrupt); err != nil {
-		// Try SIGKILL if SIGINT fails
-		if err := process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill process: %v", err)
-		}
+		// An interrupt failure is not permission to forcibly terminate the
+		// process: PIDs may have been recycled or the schedule may be stale.
+		// Preserve the PID file to allow a safe retry or manual investigation.
+		return fmt.Errorf("failed to interrupt scheduled process: %w", err)
 	}
 
 	// Remove the PID file
