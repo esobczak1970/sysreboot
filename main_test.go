@@ -1118,6 +1118,11 @@ func TestMainFunction(t *testing.T) {
 func TestHandleScheduledTimeSuccess(t *testing.T) {
 	setupTestLogger()
 	resetFlags()
+	// Scheduled actions now require a writable cancellation file. Keep this
+	// test independent of privileged production directories.
+	previousPIDDir := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	defer func() { pidFileDirOverride = previousPIDDir }()
 
 	// Test with a very short future time
 	futureTime := time.Now().Add(2 * time.Second).Format("15:04")

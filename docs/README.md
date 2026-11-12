@@ -81,8 +81,13 @@ Cancel it:
 sudo ./bin/sysreboot --cancel
 \`\`\`
 
-Scheduled and delayed actions use a PID/status file. Unix systems prefer
-\`/var/run/sysreboot.pid\` and fall back to a temporary location when needed.
+Scheduled and delayed actions use a PID/status file. Unix systems use
+\`/var/run/sysreboot.pid\`, which requires suitable filesystem permissions.
+If PID registration fails, the program exits without scheduling or executing
+the action. It does not silently fall back to a temporary file, since that
+could leave the action uncancellable by \`--cancel\` or \`--status\`.
+Windows uses the user configuration directory when available.
+Immediate actions do not need a scheduling PID file.
 
 ## Messaging and verbosity
 

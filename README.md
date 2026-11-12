@@ -30,6 +30,12 @@ Examples:
 
 The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges.
 
+Scheduling with `--time` or positive `--delay` **fails without
+performing the system action** if its cancellation PID file cannot be created.
+On Unix, `/var/run/sysreboot.pid` normally requires suitable privileges;
+fix the permissions or run with the intended privilege rather than allowing
+an uncancellable action. An immediate action does not need a PID file.
+
 Cancellation refuses PID files containing nonpositive PIDs or PID 1 before
 looking up or signaling a process. This prevents a tampered PID file from
 addressing a process group on Unix. Supported platform-specific interruption
