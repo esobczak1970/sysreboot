@@ -186,7 +186,12 @@ func init() {
 func initLogger() {
 	// Set up the log file location and initialize the logger.
 	logFile = filepath.Join(getLogFileDirectory(), appName+".log")
-	file, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	root, err := os.OpenRoot(filepath.Dir(logFile))
+	if err != nil {
+		log.Fatalf("Error opening log directory: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.OpenFile(filepath.Base(logFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		log.Fatalf("Error opening log file: %v", err)
 	}
@@ -498,11 +503,20 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 		return fmt.Errorf("failed to marshal schedule info: %v", err)
 	}
 
-	// Remove any existing stale PID file or symlink
-	_ = os.Remove(pidPath)
+	// Scope PID-file access to the trusted directory even if the file
+	// itself is replaced by a symlink between commands.
+	root, err := os.OpenRoot(filepath.Dir(pidPath))
+	if err != nil {
+		return fmt.Errorf("failed to open PID directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	name := filepath.Base(pidPath)
 
-	// Create a new PID file securely
-	f, err := os.OpenFile(pidPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	// Remove any existing stale PID file or symlink.
+	_ = root.Remove(name)
+
+	// Create a new PID file securely with exclusive creation and 0600 mode.
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return fmt.Errorf("failed to create PID file: %v", err)
 	}
@@ -520,12 +534,28 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 func readPIDFile() (*ScheduleInfo, error) {
 	pidPath := getPIDFilePath()
 
-	data, err := os.ReadFile(pidPath)
+	root, err := os.OpenRoot(filepath.Dir(pidPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open PID directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	file, err := root.Open(filepath.Base(pidPath))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("no scheduled action found")
 		}
-		return nil, fmt.Errorf("failed to read PID file: %v", err)
+		return nil, fmt.Errorf("failed to read PID file: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	// A PID file stores a small JSON record; reject oversized and corrupted
+	// content instead of allocating memory from attacker-controlled input.
+	const maxPIDFileBytes = 64 << 10
+	data, err := io.ReadAll(io.LimitReader(file, maxPIDFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PID file: %w", err)
+	}
+	if len(data) > maxPIDFileBytes {
+		return nil, fmt.Errorf("PID file exceeds maximum size")
 	}
 
 	var info ScheduleInfo
