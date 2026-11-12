@@ -30,6 +30,12 @@ Examples:
 
 The default action is reboot. Destructive actions should be tested cautiously and with appropriate privileges.
 
+Cancellation refuses PID files containing nonpositive PIDs or PID 1 before
+looking up or signaling a process. This prevents a tampered PID file from
+addressing a process group on Unix. Supported platform-specific interruption
+and termination behavior is unchanged; verifying process identity across PID
+reuse remains a separate hardening task.
+
 Help and version commands run without opening the user log. Tests isolate user
 logs and never execute real reboot or shutdown actions.
 
