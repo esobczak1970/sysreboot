@@ -532,6 +532,11 @@ func readPIDFile() (*ScheduleInfo, error) {
 	if err := json.Unmarshal(data, &info); err != nil {
 		return nil, fmt.Errorf("failed to parse PID file: %v", err)
 	}
+	// A negative PID can address a process group on Unix. PID 0 and PID 1
+	// are also not valid targets for a user-scheduled system action.
+	if info.PID <= 1 {
+		return nil, fmt.Errorf("invalid scheduled process PID: %d", info.PID)
+	}
 
 	return &info, nil
 }
@@ -562,6 +567,9 @@ func processExists(pid int) bool {
 }
 
 func processExistsInternal(pid int, goos string) bool {
+	if pid <= 1 {
+		return false
+	}
 	// On Unix systems, we can send signal 0 to check if process exists
 	if goos != "windows" {
 		process, err := findProcessFunc(pid)
