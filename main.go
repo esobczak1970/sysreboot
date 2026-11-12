@@ -795,13 +795,13 @@ func handleDelay(ctx context.Context, delay int, action string) {
 		}
 
 		cleanupPIDFile, err := setupPIDFile(scheduleInfo)
-	if err != nil {
-		logger.Printf("Error scheduling action: %v\n", err)
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		osExit(1)
-		return
-	}
-	defer cleanupPIDFile()
+		if err != nil {
+			logger.Printf("Error scheduling action: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			osExit(1)
+			return
+		}
+		defer cleanupPIDFile()
 
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
