@@ -551,14 +551,14 @@ func removePIDFile() error {
 	return nil
 }
 
-// setupPIDFile writes the PID file for the scheduled action and returns a cleanup function to remove it.
-func setupPIDFile(scheduleInfo ScheduleInfo) func() {
+// setupPIDFile registers a cancellable scheduled action. The caller must
+// not continue to shutdown or reboot if PID registration fails.
+func setupPIDFile(scheduleInfo ScheduleInfo) (func(), error) {
 	if err := writePIDFile(scheduleInfo); err != nil {
-		logger.Printf("Warning: failed to write PID file: %v\n", err)
+		return nil, fmt.Errorf("unable to register scheduled action for cancellation: %w", err)
 	}
 
-	// Ensure PID file is removed when done
-	return func() { _ = removePIDFile() }
+	return func() { _ = removePIDFile() }, nil
 }
 
 // processExists checks if a process with the given PID exists
@@ -763,7 +763,14 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 		Message:       message,
 	}
 
-	defer setupPIDFile(scheduleInfo)()
+	cleanupPIDFile, err := setupPIDFile(scheduleInfo)
+	if err != nil {
+		logger.Printf("Error scheduling action: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		osExit(1)
+		return
+	}
+	defer cleanupPIDFile()
 
 	// Attempt to schedule and handle errors if any.
 	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation); err != nil {
@@ -787,7 +794,14 @@ func handleDelay(ctx context.Context, delay int, action string) {
 			Message: message,
 		}
 
-		defer setupPIDFile(scheduleInfo)()
+		cleanupPIDFile, err := setupPIDFile(scheduleInfo)
+	if err != nil {
+		logger.Printf("Error scheduling action: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		osExit(1)
+		return
+	}
+	defer cleanupPIDFile()
 
 		logger.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
