@@ -171,3 +171,42 @@ func TestCancelScheduledAction_ProcessFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestInvalidScheduledPIDsAreNeverSignaled(t *testing.T) {
+	for _, pid := range []int{-2, -1, 0, 1} {
+		t.Run(fmt.Sprintf("pid_%d", pid), func(t *testing.T) {
+			setupTestLogger()
+			oldDir := pidFileDirOverride
+			pidFileDirOverride = t.TempDir()
+			t.Cleanup(func() { pidFileDirOverride = oldDir })
+
+			data := []byte(fmt.Sprintf(`{"pid":%d,"action":"reboot"}`, pid))
+			if err := os.WriteFile(getPIDFilePath(), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			originalLookup := findProcessFunc
+			calls := 0
+			findProcessFunc = func(int) (processController, error) {
+				calls++
+				return nil, errors.New("unexpected process lookup")
+			}
+			t.Cleanup(func() { findProcessFunc = originalLookup })
+
+			if err := cancelScheduledAction(); err == nil || !strings.Contains(err.Error(), "invalid scheduled process PID") {
+				t.Fatalf("cancelScheduledAction() error = %v; want invalid PID", err)
+			}
+			for _, platform := range []string{"linux", "windows"} {
+				if processExistsInternal(pid, platform) {
+					t.Fatalf("processExistsInternal(%d, %q) unexpectedly true", pid, platform)
+				}
+			}
+			if calls != 0 {
+				t.Fatalf("invalid PID %d resulted in %d process lookups", pid, calls)
+			}
+			if _, err := os.Stat(getPIDFilePath()); err != nil {
+				t.Fatalf("invalid schedule file unexpectedly removed: %v", err)
+			}
+		})
+	}
+}
