@@ -49,6 +49,15 @@ help:
 	  '  make ci           - Download dependencies and run make check.' \
 	  '  make clean        - Remove generated build/test artifacts.' \
 	  ''
+	@printf '%s\n' \
+	  '  Additional Make targets:' \
+	  '  make help                   - Display available Make targets.' \
+	  '  make all                    - Alias for make build.' \
+	  '  make tidy                   - Normalize Go module files (modifies files).' \
+	  '  make update                 - Upgrade dependencies and tidy modules (modifies files).' \
+	  '  make vet                    - Run go vet across packages.' \
+	  '  make golangci-lint-bin      - Install or verify the shared versioned linter binary (internal).' \
+	  '  make go-version-check       - Check the pinned Go version/module contract.'
 
 all: build
 
