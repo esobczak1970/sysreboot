@@ -512,13 +512,16 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 	defer func() { _ = root.Close() }()
 	name := filepath.Base(pidPath)
 
-	// Remove any existing stale PID file or symlink.
-	_ = root.Remove(name)
-
-	// Create a new PID file securely with exclusive creation and 0600 mode.
+	// A prior registration may represent a still-running reboot/poweroff.
+	// Never unlink it before an O_EXCL open: that silently steals the only
+	// cancellation reference for the previous privileged action. Operators
+	// can inspect or cancel a stale schedule explicitly.
 	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
-		return fmt.Errorf("failed to create PID file: %v", err)
+		if os.IsExist(err) {
+			return fmt.Errorf("another scheduled action is registered (use --status or --cancel first): %w", err)
+		}
+		return fmt.Errorf("failed to create PID file: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
