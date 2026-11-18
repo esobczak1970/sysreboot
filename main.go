@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -553,7 +554,7 @@ func readPIDFile() (*ScheduleInfo, error) {
 	file, err := root.Open(filepath.Base(pidPath))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("no scheduled action found")
+			return nil, fmt.Errorf("no scheduled action found: %w", err)
 		}
 		return nil, fmt.Errorf("failed to read PID file: %w", err)
 	}
@@ -650,7 +651,7 @@ func cancelScheduledAction() error {
 
 	// Only the original scheduler removes its registration and decision file.
 	// A successful exclusive claim prevents it from starting execution.
-	fmt.Printf("Cancellation recorded for scheduled %s action (PID: %d)\n", info.Action, info.PID)
+	fmt.Printf("Cancellation recorded for scheduled %s action (PID: %d); scheduler exit not confirmed.\n", info.Action, info.PID)
 	logger.Printf("Cancellation recorded for scheduled %s action (PID: %d)\n", info.Action, info.PID)
 	return nil
 }
@@ -659,30 +660,34 @@ func cancelScheduledAction() error {
 func showScheduleStatus() error {
 	info, err := readPIDFile()
 	if err != nil {
-		fmt.Println("No scheduled actions pending.")
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Println("No scheduled actions pending.")
+			return nil
+		}
+		return fmt.Errorf("schedule status unavailable; registration preserved: %w", err)
 	}
 
 	// A PID alone cannot establish ownership or liveness. Preserve legacy,
 	// stale and already-decided records for the scheduler or operator.
-	if _, err := scheduleGateName(info.ScheduleID); err != nil {
-		fmt.Println("Legacy or invalid schedule identity; cancellation is unavailable. Verify the original scheduler before manual recovery.")
-		return nil
-	}
-	decided, err := scheduleDecisionExists(info.ScheduleID)
-	if err != nil {
-		return err
-	}
 	fmt.Println("Scheduled Action Status:")
-	if decided {
-		fmt.Println("State:        Decision recorded (execution or cancellation); completion not confirmed.")
-	} else {
-		fmt.Println("State:        Registered; process identity and liveness not independently verified.")
-	}
-	if !processExists(info.PID) {
-		fmt.Println("Warning:      Recorded PID is not detectable; verify before manual recovery.")
-	}
 	fmt.Println("========================")
+	if _, err := scheduleGateName(info.ScheduleID); err != nil {
+		fmt.Println("State:        Legacy or invalid schedule identity; cancellation unavailable. Verify before manual recovery.")
+	} else {
+		decided, err := scheduleDecisionExists(info.ScheduleID)
+		if err != nil {
+			return err
+		}
+		if decided {
+			fmt.Println("State:        Decision recorded (execution or cancellation); completion not confirmed.")
+		} else {
+			fmt.Println("State:        Registered; process identity and liveness not independently verified.")
+		}
+		fmt.Printf("Schedule ID:  %s\n", info.ScheduleID)
+		if !processExists(info.PID) {
+			fmt.Println("Warning:      Recorded PID is not detectable; verify before manual recovery.")
+		}
+	}
 	fmt.Printf("Action:       %s\n", info.Action)
 	fmt.Printf("PID:          %d\n", info.PID)
 
