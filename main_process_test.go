@@ -145,3 +145,21 @@ func TestWaitForScheduleDecisionCanExecuteOnlyOnce(t *testing.T) {
 		t.Fatalf("duplicate execution was allowed: ready=%v err=%v", ready, err)
 	}
 }
+
+func TestScheduleStatusPreservesMalformedRegistration(t *testing.T) {
+	setupTestLogger()
+	oldDir := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	t.Cleanup(func() { pidFileDirOverride = oldDir })
+	const invalid = "{broken registration"
+	if err := os.WriteFile(getPIDFilePath(), []byte(invalid), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := showScheduleStatus(); err == nil {
+		t.Fatal("corrupt registration must not be reported as no schedule")
+	}
+	got, err := os.ReadFile(getPIDFilePath())
+	if err != nil || string(got) != invalid {
+		t.Fatalf("status changed corrupt registration: %q, %v", got, err)
+	}
+}
