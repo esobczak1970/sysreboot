@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Cancellation and execution tests exercise the same filesystem decision
@@ -105,5 +107,41 @@ func TestInvalidScheduledPIDsAreNeverSignaled(t *testing.T) {
 				t.Fatalf("invalid schedule file unexpectedly removed: %v", err)
 			}
 		})
+	}
+}
+
+func TestWaitForScheduleDecisionStopsPendingTimer(t *testing.T) {
+	id := registerTestSchedule(t)
+	if err := cancelScheduledAction(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	ready, err := waitForScheduleDecision(ctx, time.Hour, id)
+	if ready || err != nil || ctx.Err() != nil {
+		t.Fatalf("pending timer did not observe cancellation: ready=%v err=%v context=%v", ready, err, ctx.Err())
+	}
+}
+
+func TestWaitForScheduleDecisionMissingRegistrationFailsClosed(t *testing.T) {
+	id := registerTestSchedule(t)
+	if err := removePIDFile(); err != nil {
+		t.Fatal(err)
+	}
+	ready, err := waitForScheduleDecision(context.Background(), 0, id)
+	if ready || err == nil {
+		t.Fatalf("missing registration allowed execution: ready=%v err=%v", ready, err)
+	}
+}
+
+func TestWaitForScheduleDecisionCanExecuteOnlyOnce(t *testing.T) {
+	id := registerTestSchedule(t)
+	ready, err := waitForScheduleDecision(context.Background(), 0, id)
+	if !ready || err != nil {
+		t.Fatalf("valid registration did not win: ready=%v err=%v", ready, err)
+	}
+	ready, err = waitForScheduleDecision(context.Background(), 0, id)
+	if ready || err != nil {
+		t.Fatalf("duplicate execution was allowed: ready=%v err=%v", ready, err)
 	}
 }
