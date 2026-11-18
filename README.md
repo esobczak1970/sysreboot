@@ -36,11 +36,31 @@ On Unix, `/var/run/sysreboot.pid` normally requires suitable privileges;
 fix the permissions or run with the intended privilege rather than allowing
 an uncancellable action. An immediate action does not need a PID file.
 
-Cancellation refuses PID files containing nonpositive PIDs or PID 1 before
-looking up or signaling a process. This prevents a tampered PID file from
-addressing a process group on Unix. Supported platform-specific interruption
-and termination behavior is unchanged; verifying process identity across PID
-reuse remains a separate hardening task.
+Cancellation no longer sends signals to the PID stored in a schedule file.
+New scheduled actions record a random 128-bit registration identity. The
+scheduler and `--cancel` compete for a single exclusive decision marker in
+the trusted PID directory; only the first claim can succeed. The scheduler
+checks for a decision every 250 ms and must claim it before beginning the
+action. A successful cancellation request therefore prevents that registration
+from starting execution, regardless of PID reuse, on Linux, macOS and Windows.
+
+`--cancel` records cancellation rather than claiming the scheduler has exited;
+`--status` distinguishes an undecided registration from a decision with
+unconfirmed completion. Once execution has claimed the decision (including
+the optional confirmation prompt), cancellation cannot be guaranteed. Ctrl+C
+continues to stop a pending action in its original terminal.
+
+**Upgrade and recovery:** Do not mix old and new versions of the CLI while a
+scheduled action is pending. Finish or cancel any existing schedule in its
+original terminal before upgrading all invocations. Legacy records without a
+valid schedule identity are refused; stale records are intentionally preserved.
+When recovering after a crash, first independently verify that the original
+scheduler is no longer running and no OS shutdown has been dispatched. Only
+then may an authorized operator remove its PID record and corresponding
+`sysreboot-<schedule-id>.decision` marker from the trusted directory. Never
+remove either during an active schedule. A missing or inaccessible decision
+directory prevents scheduled execution. The local filesystem must support
+exclusive creation; remote/shared PID directories are not supported.
 
 Help and version commands run without opening the user log. Tests isolate user
 logs and never execute real reboot or shutdown actions.
