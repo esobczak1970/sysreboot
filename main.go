@@ -127,6 +127,7 @@ var (
 
 // ScheduleInfo holds information about a scheduled action
 type ScheduleInfo struct {
+	ScheduleID    string    `json:"schedule_id,omitempty"`
 	PID           int       `json:"pid"`
 	Action        string    `json:"action"`
 	ScheduledTime string    `json:"scheduled_time,omitempty"`
@@ -235,7 +236,7 @@ func customUsage() {
 	fmt.Fprintf(os.Stderr, "  %s --cancel                    # Cancel pending scheduled action\n", appName)
 }
 
-func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, message string, confirmation bool) error {
+func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, message string, confirmation bool, scheduleID string) error {
 	// Schedule an action (reboot, shutdown, etc.) to occur at a specific time.
 	rebootTime, err := time.Parse("15:04", timeStr)
 	if err != nil {
@@ -255,18 +256,15 @@ func scheduleAtSpecificTime(ctx context.Context, timeStr string, action string, 
 	fmt.Printf("%s scheduled at %s (in %s).\n", action, rebootTime.Format("15:04"), durationUntilReboot)
 	fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-	// Wait for either the scheduled time or a signal
-	timer := time.NewTimer(durationUntilReboot)
-	select {
-	case <-timer.C:
-		// Time reached, proceed with action
+	ready, err := waitForScheduleDecision(ctx, durationUntilReboot, scheduleID)
+	if err != nil {
+		return err
+	}
+	if ready {
 		executeAction(action, message, confirmation)
-	case <-ctx.Done():
-		// Context cancelled or signal received
-		timer.Stop()
+	} else {
 		fmt.Printf("\nCancelling scheduled action.\n")
-		logger.Printf("Cancelled %s action due to context cancellation\n", action)
-		return nil
+		logger.Printf("Cancelled %s scheduled action\n", action)
 	}
 
 	return nil
@@ -497,6 +495,16 @@ func writePIDFile(scheduleInfo ScheduleInfo) error {
 	pidPath := getPIDFilePath()
 	scheduleInfo.PID = os.Getpid()
 	scheduleInfo.CreatedAt = time.Now()
+	if scheduleInfo.ScheduleID == "" {
+		id, err := newScheduleID()
+		if err != nil {
+			return err
+		}
+		scheduleInfo.ScheduleID = id
+	}
+	if _, err := scheduleGateName(scheduleInfo.ScheduleID); err != nil {
+		return err
+	}
 
 	data, err := json.Marshal(scheduleInfo)
 	if err != nil {
@@ -586,12 +594,17 @@ func removePIDFile() error {
 
 // setupPIDFile registers a cancellable scheduled action. The caller must
 // not continue to shutdown or reboot if PID registration fails.
-func setupPIDFile(scheduleInfo ScheduleInfo) (func(), error) {
-	if err := writePIDFile(scheduleInfo); err != nil {
+func setupPIDFile(scheduleInfo *ScheduleInfo) (func(), error) {
+	id, err := newScheduleID()
+	if err != nil {
+		return nil, err
+	}
+	scheduleInfo.ScheduleID = id
+	if err := writePIDFile(*scheduleInfo); err != nil {
 		return nil, fmt.Errorf("unable to register scheduled action for cancellation: %w", err)
 	}
 
-	return func() { _ = removePIDFile() }, nil
+	return func() { cleanupScheduleRegistration(id) }, nil
 }
 
 // processExists checks if a process with the given PID exists
@@ -625,37 +638,20 @@ func cancelScheduledAction() error {
 	if err != nil {
 		return err
 	}
-
-	// Check if the process still exists
-	if !processExists(info.PID) {
-		// Process doesn't exist, just remove the stale PID file
-		if err := removePIDFile(); err != nil {
-			return fmt.Errorf("removed stale PID file, but encountered error: %v", err)
-		}
-		return fmt.Errorf("no active scheduled action found (stale PID file removed)")
-	}
-
-	// Send SIGINT to the process
-	process, err := findProcessFunc(info.PID)
+	// Older or malformed registrations cannot participate in the cooperative
+	// protocol. Never fall back to a PID signal, on any platform.
+	won, err := claimRegisteredSchedule(info.ScheduleID)
 	if err != nil {
-		return fmt.Errorf("failed to find process: %v", err)
+		return err
+	}
+	if !won {
+		return fmt.Errorf("schedule already has a decision; cancellation cannot be confirmed")
 	}
 
-	if err := process.Signal(os.Interrupt); err != nil {
-		// Try SIGKILL if SIGINT fails
-		if err := process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill process: %v", err)
-		}
-	}
-
-	// Remove the PID file
-	if err := removePIDFile(); err != nil {
-		logger.Printf("Warning: failed to remove PID file: %v", err)
-	}
-
-	fmt.Printf("Cancelled scheduled %s action (PID: %d)\n", info.Action, info.PID)
-	logger.Printf("Cancelled scheduled %s action (PID: %d)\n", info.Action, info.PID)
-
+	// Only the original scheduler removes its registration and decision file.
+	// A successful exclusive claim prevents it from starting execution.
+	fmt.Printf("Cancellation recorded for scheduled %s action (PID: %d)\n", info.Action, info.PID)
+	logger.Printf("Cancellation recorded for scheduled %s action (PID: %d)\n", info.Action, info.PID)
 	return nil
 }
 
@@ -667,14 +663,25 @@ func showScheduleStatus() error {
 		return nil
 	}
 
-	// Check if process is still running
-	if !processExists(info.PID) {
-		fmt.Println("No active scheduled actions (stale PID file found).")
-		_ = removePIDFile()
+	// A PID alone cannot establish ownership or liveness. Preserve legacy,
+	// stale and already-decided records for the scheduler or operator.
+	if _, err := scheduleGateName(info.ScheduleID); err != nil {
+		fmt.Println("Legacy or invalid schedule identity; cancellation is unavailable. Verify the original scheduler before manual recovery.")
 		return nil
 	}
-
+	decided, err := scheduleDecisionExists(info.ScheduleID)
+	if err != nil {
+		return err
+	}
 	fmt.Println("Scheduled Action Status:")
+	if decided {
+		fmt.Println("State:        Decision recorded (execution or cancellation); completion not confirmed.")
+	} else {
+		fmt.Println("State:        Registered; process identity and liveness not independently verified.")
+	}
+	if !processExists(info.PID) {
+		fmt.Println("Warning:      Recorded PID is not detectable; verify before manual recovery.")
+	}
 	fmt.Println("========================")
 	fmt.Printf("Action:       %s\n", info.Action)
 	fmt.Printf("PID:          %d\n", info.PID)
@@ -796,7 +803,7 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 		Message:       message,
 	}
 
-	cleanupPIDFile, err := setupPIDFile(scheduleInfo)
+	cleanupPIDFile, err := setupPIDFile(&scheduleInfo)
 	if err != nil {
 		logger.Printf("Error scheduling action: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -806,7 +813,8 @@ func handleScheduledTime(ctx context.Context, timeStr, action string) {
 	defer cleanupPIDFile()
 
 	// Attempt to schedule and handle errors if any.
-	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation); err != nil {
+	if err := scheduleAtSpecificTime(ctx, timeStr, action, message, confirmation, scheduleInfo.ScheduleID); err != nil {
+		cleanupPIDFile()
 		logger.Printf("Error scheduling action: %v\n", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		osExit(1)
@@ -827,7 +835,7 @@ func handleDelay(ctx context.Context, delay int, action string) {
 			Message: message,
 		}
 
-		cleanupPIDFile, err := setupPIDFile(scheduleInfo)
+		cleanupPIDFile, err := setupPIDFile(&scheduleInfo)
 		if err != nil {
 			logger.Printf("Error scheduling action: %v\n", err)
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -840,16 +848,17 @@ func handleDelay(ctx context.Context, delay int, action string) {
 		fmt.Printf("%s scheduled in %d minutes.\n", action, delay)
 		fmt.Println("Press Ctrl+C to cancel, or use 'sysreboot --cancel' from another terminal.")
 
-		// Wait for either the delay to expire or a signal
-		timer := time.NewTimer(time.Duration(delay) * time.Minute)
-		select {
-		case <-timer.C:
-			// Delay completed, proceed with action
-		case <-ctx.Done():
-			// Context cancelled or signal received
-			timer.Stop()
+		ready, err := waitForScheduleDecision(ctx, time.Duration(delay)*time.Minute, scheduleInfo.ScheduleID)
+		if err != nil {
+			cleanupPIDFile()
+			logger.Printf("Error scheduling action: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			osExit(1)
+			return
+		}
+		if !ready {
 			fmt.Printf("\nCancelling scheduled action.\n")
-			logger.Printf("Cancelled %s action due to context cancellation\n", action)
+			logger.Printf("Cancelled %s scheduled action\n", action)
 			return
 		}
 	}
