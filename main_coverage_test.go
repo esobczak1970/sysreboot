@@ -140,13 +140,14 @@ func TestScheduleAtSpecificTime_Immediate(t *testing.T) {
 		return exec.CommandContext(ctx, "true")
 	}
 
+	id := registerTestSchedule(t)
 	future := time.Now().Add(1 * time.Second)
 	timeStr := future.Format("15:04")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_ = scheduleAtSpecificTime(ctx, timeStr, ActionReboot, "msg", false)
+	_ = scheduleAtSpecificTime(ctx, timeStr, ActionReboot, "msg", false, id)
 }
 
 func TestSendWallMessageInternal_Darwin(t *testing.T) {
@@ -281,37 +282,25 @@ func TestCancelScheduledAction_RemovePIDFileFailsStale(t *testing.T) {
 	}
 }
 
-func TestCancelScheduledAction_RemovePIDFileFailsActive(t *testing.T) {
+func TestCancelScheduledAction_LegacyLivePIDRefused(t *testing.T) {
 	setupTestLogger()
+	oldDir := pidFileDirOverride
+	pidFileDirOverride = t.TempDir()
+	t.Cleanup(func() { pidFileDirOverride = oldDir })
 
 	info := ScheduleInfo{PID: os.Getpid(), Action: ActionReboot}
-	data, _ := json.Marshal(info)
-
-	dir := t.TempDir()
-	pidDir := filepath.Join(dir, "piddir")
-	_ = os.Mkdir(pidDir, 0755)
-
-	pidFileDirOverride = pidDir
-	defer func() { pidFileDirOverride = "" }()
-
-	pidPath := getPIDFilePath()
-	_ = os.WriteFile(pidPath, data, 0644)
-
-	origFind := findProcessFunc
-	defer func() { findProcessFunc = origFind }()
-	findProcessFunc = func(pid int) (processController, error) {
-		return &mockProcessController{
-			signalFunc: func(sig os.Signal) error { return nil },
-			killFunc:   func() error { return nil },
-		}, nil
-	}
-
-	_ = os.Chmod(pidDir, 0555) // make read-only to fail removal
-	defer func() { _ = os.Chmod(pidDir, 0755) }()
-
-	err := cancelScheduledAction()
+	data, err := json.Marshal(info)
 	if err != nil {
-		t.Errorf("expected nil error, got %v", err)
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(getPIDFilePath(), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cancelScheduledAction(); err == nil {
+		t.Fatal("legacy record with a live PID must not be cancelled by PID")
+	}
+	if _, err := os.Stat(getPIDFilePath()); err != nil {
+		t.Fatal("legacy registration must be preserved:", err)
 	}
 }
 
@@ -332,25 +321,6 @@ func TestShowScheduleStatus_StalePIDFile(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil error for stale PID file, got %v", err)
 	}
-}
-
-type mockProcessController struct {
-	signalFunc func(sig os.Signal) error
-	killFunc   func() error
-}
-
-func (m *mockProcessController) Signal(sig os.Signal) error {
-	if m.signalFunc != nil {
-		return m.signalFunc(sig)
-	}
-	return nil
-}
-
-func (m *mockProcessController) Kill() error {
-	if m.killFunc != nil {
-		return m.killFunc()
-	}
-	return nil
 }
 
 // Add tests for main function

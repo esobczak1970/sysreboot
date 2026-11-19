@@ -17,7 +17,7 @@ func TestSetupPIDFileReturnsErrorWithoutCleanupWhenRegistrationFails(t *testing.
 	pidFileDirOverride = filepath.Join(t.TempDir(), "missing-directory")
 	t.Cleanup(func() { pidFileDirOverride = originalDir })
 
-	cleanup, err := setupPIDFile(ScheduleInfo{Action: ActionReboot})
+	cleanup, err := setupPIDFile(&ScheduleInfo{Action: ActionReboot})
 	if err == nil || !strings.Contains(err.Error(), "unable to register scheduled action for cancellation") {
 		t.Fatalf("expected PID registration error, got %v", err)
 	}
@@ -32,7 +32,7 @@ func TestSetupPIDFileRegistersAndCleansUpSuccessfulSchedule(t *testing.T) {
 	pidFileDirOverride = t.TempDir()
 	t.Cleanup(func() { pidFileDirOverride = originalDir })
 
-	cleanup, err := setupPIDFile(ScheduleInfo{Action: ActionReboot})
+	cleanup, err := setupPIDFile(&ScheduleInfo{Action: ActionReboot})
 	if err != nil {
 		t.Fatalf("setupPIDFile() failed: %v", err)
 	}
