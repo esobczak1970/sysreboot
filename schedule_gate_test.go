@@ -22,16 +22,14 @@ func TestScheduleGateExactlyOneDecision(t *testing.T) {
 		start := make(chan struct{})
 		outcomes := make(chan bool, 2)
 		for range 2 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				<-start
 				won, err := claimScheduleGate(open, id)
 				if err != nil {
 					t.Error(err)
 				}
 				outcomes <- won
-			}()
+			})
 		}
 		close(start)
 		wg.Wait()

@@ -323,25 +323,6 @@ func TestShowScheduleStatus_StalePIDFile(t *testing.T) {
 	}
 }
 
-type mockProcessController struct {
-	signalFunc func(sig os.Signal) error
-	killFunc   func() error
-}
-
-func (m *mockProcessController) Signal(sig os.Signal) error {
-	if m.signalFunc != nil {
-		return m.signalFunc(sig)
-	}
-	return nil
-}
-
-func (m *mockProcessController) Kill() error {
-	if m.killFunc != nil {
-		return m.killFunc()
-	}
-	return nil
-}
-
 // Add tests for main function
 func TestMain_Coverage(t *testing.T) {
 	isolateUserLog(t)
